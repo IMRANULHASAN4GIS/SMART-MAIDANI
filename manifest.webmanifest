@@ -1,0 +1,30 @@
+{
+  "name": "Smart Maidani \u2014 Field GIS Collection",
+  "short_name": "Smart Maidani",
+  "description": "Field GIS data collection: build feature-class layers, define attributes, capture point/line/polygon with auto Z-elevation, symbolize, pick coordinate systems, export GeoJSON/KML/Shapefile/CSV.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#FFFFFF",
+  "theme_color": "#0079C1",
+  "categories": [
+    "productivity",
+    "utilities",
+    "business"
+  ],
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
