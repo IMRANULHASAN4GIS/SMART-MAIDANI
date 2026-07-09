@@ -461,3 +461,44 @@ input[type="checkbox"] { accent-color: var(--esri-blue); }
 
 .fab.locate.following { background: var(--esri-blue); color: #fff; }
 .fab.locate.located-only { background: var(--esri-blue-tint); color: var(--esri-blue); }
+
+/* ============================================================
+   Quick layers panel + custom imagery controls
+   ============================================================ */
+.layers-panel {
+  position: absolute; right: 12px; top: calc(var(--header-h) + env(safe-area-inset-top) + 12px + 44px*3 + 8px*3);
+  z-index: 31; background: var(--white); border-radius: var(--r); box-shadow: var(--sh-3);
+  padding: 8px; min-width: 210px; max-width: 260px; display: none; max-height: 46vh; overflow-y: auto;
+}
+.layers-panel.show { display: block; }
+.lp-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.7px; color: var(--grey-500); padding: 2px 6px 8px; display: flex; align-items: center; justify-content: space-between; }
+.lp-row { display: flex; align-items: center; gap: 9px; padding: 8px 6px; border-radius: 8px; }
+.lp-row:active { background: var(--grey-100); }
+.lp-row .sw-mini { flex-shrink: 0; width: 22px; display: grid; place-items: center; }
+.lp-row .nm { flex: 1; font-size: 13px; font-weight: 600; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lp-row .cnt { font-size: 10.5px; color: var(--grey-500); font-family: var(--mono); }
+.lp-eye { width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; color: var(--esri-blue); flex-shrink: 0; }
+.lp-eye.off { color: var(--grey-400); }
+.lp-eye svg { width: 17px; height: 17px; }
+.lp-empty { padding: 10px 6px; font-size: 12px; color: var(--grey-500); }
+
+/* imagery controls inside basemap panel */
+.basemap-panel { grid-template-columns: repeat(3, 84px); }
+.bm-imagery { grid-column: 1 / -1; padding: 9px; border: 1.5px dashed var(--grey-300); border-radius: 8px; font-size: 12px; font-weight: 600; color: var(--esri-blue); margin-top: 4px; }
+.bm-imagery:active { background: var(--esri-blue-tint); }
+.bm-imagery-row { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; padding: 6px 4px 2px; }
+.bm-imagery-row .nm { font-size: 11.5px; font-weight: 600; max-width: 90px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bm-imagery-row input[type=range] { flex: 1; accent-color: var(--esri-blue); }
+.bm-imagery-row button { width: 24px; height: 24px; border-radius: 6px; color: var(--red); font-size: 13px; }
+
+/* guidance banner */
+.guide-banner {
+  position: absolute; left: 12px; right: 66px; top: calc(var(--header-h) + env(safe-area-inset-top) + 12px);
+  z-index: 29; background: var(--esri-blue); color: #fff; border-radius: 12px; box-shadow: var(--sh-2);
+  padding: 11px 13px; display: none; align-items: flex-start; gap: 10px; font-size: 12.5px; line-height: 1.45;
+}
+.guide-banner.show { display: flex; }
+.guide-banner svg { width: 17px; height: 17px; flex-shrink: 0; margin-top: 1px; }
+.guide-banner .gb-txt { flex: 1; }
+.guide-banner .gb-txt b { display: block; font-size: 13px; margin-bottom: 1px; }
+.guide-banner .gb-act { background: rgba(255,255,255,0.2); border-radius: 8px; padding: 6px 11px; font-size: 12px; font-weight: 650; color: #fff; flex-shrink: 0; align-self: center; }

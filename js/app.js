@@ -94,7 +94,9 @@ const App = {
     $('zoomIn').onclick = () => this.state.map && this.state.map.zoomIn();
     $('zoomOut').onclick = () => this.state.map && this.state.map.zoomOut();
     $('menuBtn').onclick = () => this.rootNav(this.openMenu);
-    $('layersBtn').onclick = () => this.rootNav(this.openLayers);
+    $('layersBtn').onclick = (e) => { e.stopPropagation(); this.toggleLayersPanel(); };
+    document.getElementById('lpManage').onclick = () => { document.getElementById('layersPanel').classList.remove('show'); this.rootNav(this.openLayers); };
+    document.addEventListener('click', (e) => { const p = $('layersPanel'), btn = $('layersBtn'); if (p.classList.contains('show') && !p.contains(e.target) && !btn.contains(e.target)) p.classList.remove('show'); });
     $('locateBtn').onclick = () => this.locate(false);
     $('collectBtn').onclick = () => this.rootNav(this.startCollect);
     $('navList').onclick = () => this.rootNav(this.openRecords);
@@ -110,6 +112,7 @@ const App = {
     $('sheetBack').onclick = () => this.goBack();
     $('scrim').onclick = () => this.closeSheet();
     this.wireCameraControls();
+    this.wireImagery();
   },
 
   wireNet() {
@@ -125,7 +128,10 @@ const App = {
     this.state.activeBasemap = key;
     document.getElementById('basemapPanel').classList.remove('show');
   },
-  bringLayersFront() { Object.values(this.state.layerGroups).forEach((g) => g.bringToFront && g.bringToFront()); if (this.state.gpsLayer) this.state.gpsLayer.bringToFront(); },
+  bringLayersFront() {
+    Object.values(this.state.layerGroups).forEach((g) => { if (g.eachLayer) g.eachLayer((f) => { if (f.bringToFront) f.bringToFront(); }); });
+    if (this.state.gpsLayer && this.state.gpsLayer.eachLayer) this.state.gpsLayer.eachLayer((f) => { if (f.bringToFront) f.bringToFront(); });
+  },
 
   /* ---------- Live location tracking: heading puck, follow mode, breadcrumb trail ---------- */
   locate(silent) {
@@ -314,10 +320,12 @@ Object.assign(App, {
     document.getElementById('barProj').textContent = p.name;
     this.refreshBarSub();
     this.renderAllLayers();
+    this.restoreImagery();
     this.closeSheet();
     // if no layers yet, prompt to create one
     const layers = this.state.layers.filter((l) => l.projectId === p.id);
-    if (layers.length === 0) setTimeout(() => this.rootNav(this.openLayers), 400);
+    if (layers.length === 0) setTimeout(() => this.rootNav(this.projectStartChoice), 400);
+    else setTimeout(() => this.updateGuidance(), 500);
   },
   refreshBarSub() {
     const p = this.state.project; if (!p) return;
@@ -359,7 +367,8 @@ Object.assign(App, {
    ============================================================ */
 Object.assign(App, {
   layerEditor(existing) {
-    const l = existing ? JSON.parse(JSON.stringify(existing)) : { id: uid('lyr'), projectId: this.state.project.id, name: '', geomType: 'point', fields: [], symbology: this.defaultSymb('point'), createdAt: nowISO() };
+    const newColor = existing ? null : this.nextLayerColor();
+    const l = existing ? JSON.parse(JSON.stringify(existing)) : { id: uid('lyr'), projectId: this.state.project.id, name: '', geomType: 'point', fields: [], symbology: this.defaultSymb('point', newColor), createdAt: nowISO() };
     this._layerDraft = l;
     const geomLocked = !!existing && this.state.records.some((r) => r.layerId === l.id);
     const body = `
@@ -373,7 +382,7 @@ Object.assign(App, {
         <div id="fieldList"></div>
       </div>`;
     this.openSheet(existing ? 'Edit layer' : 'New layer', body, `<button class="btn btn-ghost flex" id="lBack">Back</button>${existing ? `<button class="btn btn-danger" id="lDel">${icon('trash', 16)}</button>` : ''}<button class="btn btn-primary flex" id="lSave">${icon('check', 16)} Save layer</button>`);
-    if (!geomLocked) document.querySelectorAll('#lGeom [data-g]').forEach((el) => el.onclick = () => { l.geomType = el.dataset.g; if (!existing) l.symbology = this.defaultSymb(l.geomType); document.querySelectorAll('#lGeom [data-g]').forEach((x) => x.classList.toggle('on', x === el)); });
+    if (!geomLocked) document.querySelectorAll('#lGeom [data-g]').forEach((el) => el.onclick = () => { const keep = l.symbology && l.symbology.color; l.geomType = el.dataset.g; if (!existing) l.symbology = this.defaultSymb(l.geomType, keep); document.querySelectorAll('#lGeom [data-g]').forEach((x) => x.classList.toggle('on', x === el)); });
     const renderFields = () => {
       const host = document.getElementById('fieldList');
       host.innerHTML = l.fields.length === 0 ? '<div class="muted" style="padding:4px 0">No custom fields yet.</div>' : l.fields.map((f, i) => `
@@ -396,7 +405,7 @@ Object.assign(App, {
     if (existing) document.getElementById('lDel').onclick = async () => {
       if (!confirm(`Delete layer "${l.name}" and ALL its records? This cannot be undone.`)) return;
       const recs = this.state.records.filter((r) => r.layerId === l.id);
-      for (const r of recs) await DB.del('records', r.id);
+      for (const r of recs) { for (const m of (r.media || [])) if (!m.dataUrl) await Media.remove(m.id); await DB.del('records', r.id); }
       this.state.records = this.state.records.filter((r) => r.layerId !== l.id);
       await DB.del('layers', l.id);
       this.state.layers = this.state.layers.filter((x) => x.id !== l.id);
@@ -411,14 +420,21 @@ Object.assign(App, {
       const i = this.state.layers.findIndex((x) => x.id === l.id);
       if (i >= 0) this.state.layers[i] = l; else this.state.layers.push(l);
       this.renderAllLayers(); this.refreshBarSub();
-      this.toast('Layer saved', 'ok'); this.goBack();
+      this.toast('Layer saved', 'ok'); this.rootNav(this.afterLayerSaved, [l]);
     };
   },
 
-  defaultSymb(geom) {
-    if (geom === 'line') return { color: '#0079C1', weight: 4, opacity: 1 };
-    if (geom === 'polygon') return { color: '#0079C1', weight: 2, opacity: 1, fillOpacity: 0.25 };
-    return { color: '#E14B3B', size: 7, weight: 2, opacity: 1 };
+  LAYER_PALETTE: ['#E14B3B', '#0079C1', '#35AC46', '#F0A324', '#7A4FBF', '#00A0B0', '#D6336C', '#8B5A2B', '#111827', '#5C940D'],
+  nextLayerColor() {
+    const used = this.state.layers.filter((l) => l.projectId === (this.state.project && this.state.project.id)).map((l) => (l.symbology && l.symbology.color || '').toLowerCase());
+    for (const c of this.LAYER_PALETTE) if (!used.includes(c.toLowerCase())) return c;
+    return this.LAYER_PALETTE[this.state.layers.length % this.LAYER_PALETTE.length];
+  },
+  defaultSymb(geom, color) {
+    const c = color || '#0079C1';
+    if (geom === 'line') return { color: c, weight: 4, opacity: 1 };
+    if (geom === 'polygon') return { color: c, weight: 2, opacity: 1, fillOpacity: 0.25 };
+    return { color: c, size: 7, weight: 2, opacity: 1 };
   },
 
   symbologyEditor(layerId) {
@@ -533,21 +549,32 @@ Object.assign(App, {
       ${(r.media || []).length ? `<div class="card-lbl" style="margin-top:16px">Photos & video (${r.media.length})</div><div class="media-grid">${r.media.map((m, i) => this.mediaThumb(m, i)).join('')}</div>` : ''}`;
     const foot = `${g ? `<button class="btn btn-ghost" id="dZoom">${icon('mapPin', 16)}</button><button class="btn btn-ghost" id="dGeom">${icon('move', 16)}</button>` : ''}<button class="btn btn-ghost flex" id="dEdit">${icon('pencil', 16)} Edit</button><button class="btn btn-danger" id="dDel">${icon('trash', 16)}</button>`;
     this.openSheet(l ? l.name : 'Record', body, foot);
+    this.hydrateMedia(r.media);
     if (g) {
       document.getElementById('dZoom').onclick = () => { this.closeSheet(); const c = g.type === 'Point' ? g.coordinates : (g.type === 'LineString' ? g.coordinates[0] : g.coordinates[0][0]); this.state.map.setView([c[1], c[0]], 18); };
       document.getElementById('dGeom').onclick = () => this.startEditGeom(r, l);
     }
     document.getElementById('dEdit').onclick = () => this.navTo(this.startCollect, [r]);
     let cd = false; const db = document.getElementById('dDel');
-    db.onclick = async () => { if (!cd) { cd = true; db.innerHTML = `${icon('alert', 16)}`; this.toast('Tap again to delete'); return; } await DB.del('records', r.id); this.state.records = this.state.records.filter((x) => x.id !== r.id); this.renderAllLayers(); this.refreshBarSub(); this.toast('Record deleted'); this.goBack(); };
+    db.onclick = async () => { if (!cd) { cd = true; db.innerHTML = `${icon('alert', 16)}`; this.toast('Tap again to delete'); return; } for (const m of (r.media || [])) if (!m.dataUrl) await Media.remove(m.id); await DB.del('records', r.id); this.state.records = this.state.records.filter((x) => x.id !== r.id); this.renderAllLayers(); this.refreshBarSub(); this.toast('Record deleted'); this.goBack(); };
   },
 
   mediaThumb(m, i, removable) {
     const geo = (m.lat != null) ? `<div class="geo">${icon('mapPin', 8)} geo</div>` : '';
     const rm = removable ? `<div class="rm" data-rm="${i}">${icon('x', 13)}</div>` : '';
-    if (m.type === 'video') return `<div class="mi"><video src="${m.dataUrl}" muted></video><div class="vic">${icon('play', 28)}</div><div class="tag">video</div>${geo}${rm}</div>`;
+    if (m.type === 'video') return `<div class="mi"><video data-media="${m.id}" ${m.dataUrl ? `src="${m.dataUrl}"` : ''} muted></video><div class="vic">${icon('play', 28)}</div><div class="tag">video</div>${geo}${rm}</div>`;
     if (m.type === 'file') return `<div class="mi" style="display:grid;place-items:center;color:var(--grey-400)">${icon('file', 26)}<div class="tag">${esc((m.name || 'file').split('.').pop())}</div>${rm}</div>`;
-    return `<div class="mi"><img src="${m.dataUrl}" /><div class="tag">photo</div>${geo}${rm}</div>`;
+    return `<div class="mi"><img data-media="${m.id}" ${m.dataUrl ? `src="${m.dataUrl}"` : ''} alt="" /><div class="tag">photo</div>${geo}${rm}</div>`;
+  },
+  // Fill in blob-backed thumbnails after the sheet renders (legacy dataUrl entries already have src)
+  async hydrateMedia(mediaList) {
+    for (const m of (mediaList || [])) {
+      if (m.dataUrl) continue;
+      const el = document.querySelector(`[data-media="${m.id}"]`);
+      if (!el || el.src) continue;
+      const url = await Media.url(m);
+      if (url && document.contains(el)) el.src = url;
+    }
   },
 
   /* ---------- Edit geometry on map ---------- */
@@ -651,6 +678,7 @@ Object.assign(App, {
     const foot = `<button class="btn btn-ghost" id="fDraft">${icon('save', 16)} Draft</button><button class="btn btn-primary flex" id="fDone" ${missing.length ? 'disabled' : ''}>${icon('check', 16)} Complete</button>`;
     this.openSheet(d.id ? `Edit · ${l.name}` : `New ${l.name}`, body, foot);
     this.wireForm();
+    this.hydrateMedia(d.media);
   },
 
   geoReadout(d) {
@@ -844,7 +872,13 @@ Object.assign(App, {
     document.getElementById('bVideo').onclick = () => this.openCamera('video');
     document.getElementById('bFile').onclick = () => iF.click();
     const add = (files, type) => {
-      const doAdd = (lat, lng) => Array.from(files).forEach((file) => { const rd = new FileReader(); rd.onload = () => { d.media = d.media || []; d.media.push({ id: uid('m'), type, name: file.name, dataUrl: rd.result, lat, lng, capturedAt: nowISO() }); this.openForm(); }; rd.readAsDataURL(file); });
+      const doAdd = (lat, lng) => Array.from(files).forEach(async (file) => {
+        const id = uid('m');
+        await Media.save(id, file); // File is a Blob
+        d.media = d.media || [];
+        d.media.push({ id, type, kind: type, name: file.name, mime: file.type, size: file.size, lat, lng, capturedAt: nowISO() });
+        this.openForm();
+      });
       // link to record location if we have it, else current GPS
       if (d.location && d.location.lat) doAdd(d.location.lat, d.location.lng);
       else if (navigator.geolocation && type !== 'file') navigator.geolocation.getCurrentPosition((pos) => doAdd(pos.coords.latitude, pos.coords.longitude), () => doAdd(null, null), { enableHighAccuracy: true, timeout: 6000 });
@@ -854,116 +888,148 @@ Object.assign(App, {
     iP.onchange = (e) => { if (e.target.files.length) add(e.target.files, 'photo'); e.target.value = ''; };
     iV.onchange = (e) => { if (e.target.files.length) add(e.target.files, 'video'); e.target.value = ''; };
     iF.onchange = (e) => { if (e.target.files.length) add(e.target.files, 'file'); e.target.value = ''; };
-    document.querySelectorAll('[data-rm]').forEach((el) => el.onclick = (ev) => { ev.stopPropagation(); d.media.splice(parseInt(el.dataset.rm), 1); this.openForm(); });
+    document.querySelectorAll('[data-rm]').forEach((el) => el.onclick = (ev) => { ev.stopPropagation(); const removed = d.media.splice(parseInt(el.dataset.rm), 1)[0]; if (removed && !removed.dataUrl) Media.remove(removed.id); this.openForm(); });
   },
 
-  /* ---------- In-app camera: live preview, tap-to-capture, auto-saved ---------- */
+  /* ---------- In-app camera: live preview, tap-to-capture, saved as Blob ---------- */
+  camEl(id) { return document.getElementById(id); },
+  camReady() {
+    // Every element the camera needs must exist; if not, the deployed index.html is outdated.
+    return ['cameraView', 'camVideo', 'camCanvas', 'camThumbs', 'camError', 'camErrorMsg', 'camTimer', 'camShutter'].every((id) => document.getElementById(id));
+  },
   async openCamera(mode) {
     if (!this.state.draft) return;
+    if (!this.camReady()) { this.toast('Camera screen missing — update the app files (index.html) and reload', 'err'); return; }
+    if (!window.isSecureContext) { this.toast('Camera needs HTTPS (or localhost). Open the app from its https:// address.', 'err'); return; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      this.toast('This browser does not support camera capture — using file picker instead', 'err');
+      const input = mode === 'video' ? document.getElementById('iVideo') : document.getElementById('iPhoto');
+      if (input) input.click();
+      return;
+    }
     this._camMode = mode;
     this._camFacing = this._camFacing || 'environment';
-    this._camShots = 0;
-    document.getElementById('camThumbs').innerHTML = '';
-    document.getElementById('camError').classList.remove('show');
-    document.getElementById('camTimer').style.display = 'none';
-    document.getElementById('cameraView').classList.add('show');
-    document.getElementById('camShutter').classList.remove('recording');
+    this.camEl('camThumbs').innerHTML = '';
+    this.camEl('camError').classList.remove('show');
+    this.camEl('camTimer').style.display = 'none';
+    this.camEl('cameraView').classList.add('show');
+    this.camEl('camShutter').classList.remove('recording');
     await this.startCameraStream();
   },
   async startCameraStream(facing) {
     if (this._camStream) { this._camStream.getTracks().forEach((t) => t.stop()); this._camStream = null; }
-    const video = document.getElementById('camVideo');
+    const video = this.camEl('camVideo');
     try {
       const constraints = { video: { facingMode: facing || this._camFacing }, audio: this._camMode === 'video' };
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       this._camStream = stream;
       video.srcObject = stream;
-      document.getElementById('camError').classList.remove('show');
+      try { await video.play(); } catch {}
+      this.camEl('camError').classList.remove('show');
     } catch (err) {
+      // Retry without exact facing (laptops often have a single user-facing webcam)
+      if (!this._camRetried) {
+        this._camRetried = true;
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: this._camMode === 'video' });
+          this._camStream = stream; video.srcObject = stream;
+          try { await video.play(); } catch {}
+          this.camEl('camError').classList.remove('show');
+          this._camRetried = false;
+          return;
+        } catch (err2) { this._camRetried = false; this.showCameraError(err2); return; }
+      }
       this.showCameraError(err);
     }
   },
   showCameraError(err) {
-    const msg = document.getElementById('camErrorMsg');
-    if (err && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')) msg.textContent = 'Camera access was blocked. Allow camera access for this site in your browser settings, then try again.';
-    else if (err && err.name === 'NotFoundError') msg.textContent = 'No camera was found on this device.';
-    else msg.textContent = 'Could not start the camera. You can upload a photo or video file instead.';
-    document.getElementById('camError').classList.add('show');
+    const msg = this.camEl('camErrorMsg');
+    if (err && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')) msg.textContent = 'Camera access was blocked. Click the camera/lock icon in the address bar, allow Camera, then Try again.';
+    else if (err && err.name === 'NotFoundError') msg.textContent = 'No camera found on this device. Use "Upload a file instead".';
+    else if (err && err.name === 'NotReadableError') msg.textContent = 'Camera is in use by another app. Close it and try again.';
+    else msg.textContent = 'Could not start the camera (' + (err && err.name || 'unknown') + '). You can upload a photo or video file instead.';
+    this.camEl('camError').classList.add('show');
   },
   wireCameraControls() {
-    document.getElementById('camClose').onclick = () => this.closeCamera();
-    document.getElementById('camDone').onclick = () => this.closeCamera();
-    document.getElementById('camSwitch').onclick = () => { this._camFacing = this._camFacing === 'environment' ? 'user' : 'environment'; this.startCameraStream(); };
-    document.getElementById('camRetry').onclick = () => this.startCameraStream();
-    document.getElementById('camUseFile').onclick = () => { this.closeCamera(); const input = this._camMode === 'video' ? document.getElementById('iVideo') : document.getElementById('iPhoto'); input.click(); };
-    document.getElementById('camShutter').onclick = () => { if (this._camMode === 'photo') this.capturePhoto(); else this.toggleVideoRecording(); };
+    if (!this.camReady()) return; // outdated index.html — openCamera will surface the message
+    this.camEl('camClose').onclick = () => this.closeCamera();
+    this.camEl('camDone').onclick = () => this.closeCamera();
+    this.camEl('camSwitch').onclick = () => { this._camFacing = this._camFacing === 'environment' ? 'user' : 'environment'; this.startCameraStream(); };
+    this.camEl('camRetry').onclick = () => this.startCameraStream();
+    this.camEl('camUseFile').onclick = () => { this.closeCamera(); const input = this._camMode === 'video' ? document.getElementById('iVideo') : document.getElementById('iPhoto'); if (input) input.click(); };
+    this.camEl('camShutter').onclick = () => { if (this._camMode === 'photo') this.capturePhoto(); else this.toggleVideoRecording(); };
   },
   capturePhoto() {
-    const video = document.getElementById('camVideo');
-    if (!video.videoWidth) return;
-    const canvas = document.getElementById('camCanvas');
+    const video = this.camEl('camVideo');
+    if (!video.videoWidth) { this.toast('Camera still starting — try again', 'err'); return; }
+    const canvas = this.camEl('camCanvas');
     canvas.width = video.videoWidth; canvas.height = video.videoHeight;
     canvas.getContext('2d').drawImage(video, 0, 0);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
-    this.attachCapturedMedia('photo', dataUrl);
+    canvas.toBlob(async (blob) => {
+      if (!blob) { this.toast('Capture failed', 'err'); return; }
+      await this.attachCapturedMedia('photo', blob);
+      const url = URL.createObjectURL(blob);
+      this.addCamThumb(url, 'photo');
+    }, 'image/jpeg', 0.88);
     this.flashShutter();
-    this.addCamThumb(dataUrl, 'photo');
   },
   flashShutter() {
-    const v = document.getElementById('camVideo');
+    const v = this.camEl('camVideo');
     v.style.transition = 'none'; v.style.opacity = '0.4';
     requestAnimationFrame(() => { v.style.transition = 'opacity 0.25s'; v.style.opacity = '1'; });
   },
   toggleVideoRecording() {
-    const btn = document.getElementById('camShutter');
-    if (this._recorder && this._recorder.state === 'recording') {
-      this._recorder.stop();
-      return;
-    }
+    const btn = this.camEl('camShutter');
+    if (this._recorder && this._recorder.state === 'recording') { this._recorder.stop(); return; }
+    if (typeof MediaRecorder === 'undefined') { this.toast('Video recording not supported on this browser', 'err'); return; }
     const chunks = [];
     let mr;
-    try { mr = new MediaRecorder(this._camStream, { mimeType: MediaRecorder.isTypeSupported('video/webm') ? 'video/webm' : '' }); }
-    catch { this.toast('Video recording not supported on this browser', 'err'); return; }
+    try {
+      const mime = MediaRecorder.isTypeSupported('video/webm') ? 'video/webm' : (MediaRecorder.isTypeSupported('video/mp4') ? 'video/mp4' : '');
+      mr = mime ? new MediaRecorder(this._camStream, { mimeType: mime }) : new MediaRecorder(this._camStream);
+    } catch (e) { this.toast('Video recording not supported: ' + e.message, 'err'); return; }
     this._recorder = mr;
-    mr.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-    mr.onstop = () => {
+    mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    mr.onstop = async () => {
       clearInterval(this._camTimerInt);
-      document.getElementById('camTimer').style.display = 'none';
+      this.camEl('camTimer').style.display = 'none';
       btn.classList.remove('recording');
       const blob = new Blob(chunks, { type: mr.mimeType || 'video/webm' });
-      const rd = new FileReader();
-      rd.onload = () => { this.attachCapturedMedia('video', rd.result); this.addCamThumb(null, 'video'); };
-      rd.readAsDataURL(blob);
+      await this.attachCapturedMedia('video', blob);
+      this.addCamThumb(null, 'video');
     };
     mr.start();
     btn.classList.add('recording');
     let secs = 0;
-    document.getElementById('camTimer').style.display = 'flex';
+    this.camEl('camTimer').style.display = 'flex';
     document.getElementById('camTimerTxt').textContent = '0:00';
     this._camTimerInt = setInterval(() => { secs++; const m = Math.floor(secs / 60), s = secs % 60; document.getElementById('camTimerTxt').textContent = `${m}:${String(s).padStart(2, '0')}`; }, 1000);
   },
-  attachCapturedMedia(type, dataUrl) {
+  // Save capture as a Blob in the media store; the record keeps metadata only.
+  async attachCapturedMedia(type, blob) {
     const d = this.state.draft; if (!d) return;
     d.media = d.media || [];
     const loc = d.location || this.state.lastFix;
-    d.media.push({ id: uid('m'), type, kind: type, name: `${type}_${Date.now()}.${type === 'video' ? 'webm' : 'jpg'}`, dataUrl, lat: loc ? loc.lat : null, lng: loc ? loc.lng : null, capturedAt: nowISO() });
-    this._camShots++;
+    const id = uid('m');
+    const ext = type === 'video' ? (blob.type.includes('mp4') ? 'mp4' : 'webm') : 'jpg';
+    await Media.save(id, blob);
+    d.media.push({ id, type, kind: type, name: `${type}_${Date.now()}.${ext}`, mime: blob.type, size: blob.size, lat: loc ? loc.lat : null, lng: loc ? loc.lng : null, capturedAt: nowISO() });
     this.toast(type === 'photo' ? 'Photo saved to record' : 'Video saved to record', 'ok');
   },
-  addCamThumb(dataUrl, type) {
-    const strip = document.getElementById('camThumbs');
-    const el = document.createElement(dataUrl ? 'img' : 'div');
-    if (dataUrl) el.src = dataUrl; else { el.className = 'vt'; el.innerHTML = icon('video', 18); }
-    if (!dataUrl) el.classList.add('vt');
+  addCamThumb(objUrl, type) {
+    const strip = this.camEl('camThumbs');
+    const el = document.createElement(objUrl ? 'img' : 'div');
+    if (objUrl) el.src = objUrl; else { el.className = 'vt'; el.innerHTML = icon('video', 18); }
     strip.appendChild(el);
     while (strip.children.length > 4) strip.removeChild(strip.firstChild);
   },
   closeCamera() {
     if (this._recorder && this._recorder.state === 'recording') this._recorder.stop();
     if (this._camStream) { this._camStream.getTracks().forEach((t) => t.stop()); this._camStream = null; }
-    document.getElementById('cameraView').classList.remove('show');
+    this.camEl('cameraView').classList.remove('show');
     if (this.state.draft) this.openForm(); // refresh sheet to show newly captured media
   },
+
 
   async saveRecord(status) {
     const d = this.state.draft, l = d._layer;
@@ -981,6 +1047,7 @@ Object.assign(App, {
     if (g && this.state.map) { const c = g.type === 'Point' ? g.coordinates : (g.type === 'LineString' ? g.coordinates[0] : g.coordinates[0][0]); this.state.map.setView([c[1], c[0]], Math.max(this.state.map.getZoom(), 16)); }
     // if Z still missing and online, backfill
     if (rec.location && rec.location.z == null && navigator.onLine) this.backfillZ(rec);
+    setTimeout(() => this.updateGuidance(), 400);
   },
   async backfillZ(rec) {
     try { const { z } = await Geo.elevation(rec.location.lat, rec.location.lng); if (z != null) { rec.location.z = Math.round(z * 100) / 100; if (rec.geometry && rec.geometry.type === 'Point') rec.geometry.coordinates[2] = rec.location.z; await DB.put('records', rec); } } catch {}
@@ -1017,47 +1084,7 @@ Object.assign(App, {
     };
   },
 
-  /* ---------- Import existing data ---------- */
-  openImport() {
-    if (!this.state.project) { this.toast('Select a project first', 'err'); return; }
-    const layers = this.state.layers.filter((l) => l.projectId === this.state.project.id);
-    const body = `
-      <div class="note" style="margin-bottom:12px">Load a <b>GeoJSON</b> file. Each feature becomes an editable record. Choose which layer to import into (or create one first that matches the geometry).</div>
-      <div class="field"><label class="lbl">Import into layer</label><select class="sel" id="impLayer">${layers.length ? layers.map((l) => `<option value="${l.id}">${esc(l.name)} (${l.geomType})</option>`).join('') : '<option value="">— no layers, create one first —</option>'}</select></div>
-      <input type="file" id="impFile" accept=".geojson,.json,application/geo+json,application/json" hidden />
-      <button class="btn btn-primary btn-block" id="impBtn" ${layers.length ? '' : 'disabled'}>${icon('upload', 16)} Choose GeoJSON file</button>`;
-    this.openSheet('Import data', body);
-    const file = document.getElementById('impFile');
-    document.getElementById('impBtn').onclick = () => file.click();
-    file.onchange = (e) => { const f = e.target.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => this.doImport(rd.result, document.getElementById('impLayer').value); rd.readAsText(f); e.target.value = ''; };
-  },
-  async doImport(text, layerId) {
-    const l = this.state.layers.find((x) => x.id === layerId); if (!l) { this.toast('Pick a layer', 'err'); return; }
-    let gj; try { gj = JSON.parse(text); } catch { this.toast('Invalid JSON', 'err'); return; }
-    const feats = gj.type === 'FeatureCollection' ? gj.features : (gj.type === 'Feature' ? [gj] : []);
-    if (!feats.length) { this.toast('No features found', 'err'); return; }
-    let n = 0;
-    for (const f of feats) {
-      if (!f.geometry) continue;
-      const gt = f.geometry.type;
-      const geomType = gt === 'Point' ? 'point' : gt === 'LineString' ? 'line' : gt === 'Polygon' ? 'polygon' : null;
-      if (!geomType) continue;
-      const props = f.properties || {};
-      const data = {};
-      l.fields.forEach((fl) => { const hit = Object.keys(props).find((k) => k.toLowerCase() === fl.key.toLowerCase() || k.toLowerCase() === fl.label.toLowerCase()); if (hit) data[fl.key] = props[hit]; });
-      let loc = null;
-      if (gt === 'Point') loc = { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0], z: f.geometry.coordinates[2] ?? props.Z_Elevation ?? null, accuracy: null };
-      else { const c0 = gt === 'Polygon' ? f.geometry.coordinates[0][0] : f.geometry.coordinates[0]; loc = { lat: c0[1], lng: c0[0], z: props.Z_Elevation ?? null, accuracy: null }; }
-      const rec = { id: uid('rec'), projectId: this.state.project.id, layerId: l.id, layerName: l.name, geomType, data, geometry: f.geometry, location: loc, media: [], surveyor: props.surveyor || this.state.user.name, role: props.role || this.state.user.role, status: 'completed', createdAt: nowISO(), updatedAt: nowISO() };
-      await DB.put('records', rec); this.state.records.unshift(rec); n++;
-    }
-    this.renderAllLayers(); this.refreshBarSub();
-    this.toast(`Imported ${n} feature${n !== 1 ? 's' : ''} into ${l.name}`, 'ok');
-    this.closeSheet();
-    // zoom to imported
-    const recs = this.state.records.filter((r) => r.layerId === l.id);
-    if (recs.length && this.state.map) { const g = Exporter.geometryOf(recs[0]); const c = g.type === 'Point' ? g.coordinates : (g.type === 'LineString' ? g.coordinates[0] : g.coordinates[0][0]); this.state.map.setView([c[1], c[0]], 15); }
-  },
+  /* ---------- Import: see Part 8 (multi-format openImport / parseGISFile / importGeoJSON) ---------- */
 
   /* ---------- Export ---------- */
   openExport() {
@@ -1093,7 +1120,7 @@ Object.assign(App, {
         else if (ex === 'csv') { downloadBlob(`${safe}.csv`, Exporter.toCSV(s), 'text/csv'); this.toast('CSV downloaded', 'ok'); }
         else if (ex === 'xlsx') { Exporter.downloadExcel(s, proj.name); this.toast('Excel downloaded', 'ok'); }
         else if (ex === 'shp') { const bl = Exporter.toShapefileZip(s, proj.name); if (bl) { downloadBlob(`${safe}_shapefile.zip`, bl, 'application/zip'); this.toast('Shapefile downloaded', 'ok'); } else this.toast('No mappable geometry', 'err'); }
-        else if (ex === 'pdf') { if (Exporter.openPDFReport(s, proj)) this.toast('Choose Save as PDF', 'ok'); else this.toast('Allow popups for PDF', 'err'); }
+        else if (ex === 'pdf') { if (await Exporter.openPDFReport(s, proj)) this.toast('Choose Save as PDF', 'ok'); else this.toast('Allow popups for PDF', 'err'); }
       } catch (e) { this.toast('Export failed: ' + e.message, 'err'); }
     });
     document.getElementById('exZip').onclick = async () => {
@@ -1114,6 +1141,280 @@ Object.assign(App, {
     out.features.forEach((f) => { if (f.geometry && f.geometry.coordinates) f.geometry.coordinates = conv(f.geometry.coordinates); });
     out.crs = { type: 'name', properties: { name: crsCode } };
     return out;
+  },
+});
+
+
+
+/* ============================================================
+   Part 7 — Quick layers panel, guidance system, setup wizard
+   ============================================================ */
+Object.assign(App, {
+  /* ---------- Quick layer visibility panel (Esri layer-list pattern) ---------- */
+  toggleLayersPanel() {
+    const p = document.getElementById('layersPanel');
+    if (p.classList.contains('show')) { p.classList.remove('show'); return; }
+    this.renderLayersPanel();
+    p.classList.add('show');
+  },
+  renderLayersPanel() {
+    const host = document.getElementById('lpList');
+    if (!this.state.project) { host.innerHTML = '<div class="lp-empty">No project open.</div>'; return; }
+    const layers = this.state.layers.filter((l) => l.projectId === this.state.project.id);
+    if (!layers.length) { host.innerHTML = '<div class="lp-empty">No layers yet — tap Manage to create one.</div>'; return; }
+    const eyeOn = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+    const eyeOff = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>';
+    host.innerHTML = layers.map((l) => {
+      const n = this.state.records.filter((r) => r.layerId === l.id).length;
+      return `<div class="lp-row"><div class="sw-mini">${this.symbSwatch(l)}</div><div class="nm">${esc(l.name)}</div><span class="cnt">${n}</span><button class="lp-eye ${l.hidden ? 'off' : ''}" data-lpv="${l.id}">${l.hidden ? eyeOff : eyeOn}</button></div>`;
+    }).join('');
+    host.querySelectorAll('[data-lpv]').forEach((el) => el.onclick = async () => {
+      const l = this.state.layers.find((x) => x.id === el.dataset.lpv);
+      l.hidden = !l.hidden;
+      await DB.put('layers', l);
+      this.renderAllLayers();
+      this.renderLayersPanel();
+    });
+  },
+
+  /* ---------- Contextual guidance ---------- */
+  guide(title, msg, actionLabel, actionFn) {
+    const b = document.getElementById('guideBanner');
+    document.getElementById('gbTitle').textContent = title;
+    document.getElementById('gbMsg').textContent = msg;
+    const act = document.getElementById('gbAction');
+    if (actionLabel) { act.style.display = 'block'; act.textContent = actionLabel; act.onclick = () => { this.hideGuide(); actionFn && actionFn(); }; }
+    else act.style.display = 'none';
+    b.classList.add('show');
+    clearTimeout(this._guideT);
+    this._guideT = setTimeout(() => this.hideGuide(), 14000);
+  },
+  hideGuide() { document.getElementById('guideBanner').classList.remove('show'); clearTimeout(this._guideT); },
+  // Called after key state changes: shows the user their current status and next step
+  updateGuidance() {
+    if (!this.state.user) return;
+    if (!this.state.project) { this.guide('No project open', 'Create or open a project to begin.', 'Projects', () => this.rootNav(this.openProjectPicker)); return; }
+    const layers = this.state.layers.filter((l) => l.projectId === this.state.project.id);
+    if (!layers.length) { this.guide('Project ready', 'Now add your first layer — import GIS data or create one from scratch.', 'Set up', () => this.rootNav(this.projectStartChoice)); return; }
+    const recs = this.state.records.filter((r) => r.projectId === this.state.project.id);
+    if (!recs.length) { this.guide(`${layers.length} layer${layers.length > 1 ? 's' : ''} ready`, 'Tap Collect to capture your first record, or import existing data from the menu.', 'Collect', () => this.rootNav(this.startCollect)); return; }
+    this.hideGuide();
+  },
+
+  /* ---------- Setup wizard: after project creation ---------- */
+  projectStartChoice() {
+    const body = `
+      <div class="note" style="margin-bottom:14px"><b>${esc(this.state.project.name)}</b> is ready. How do you want to start?</div>
+      <div class="tpl" id="wImport"><div class="ic">${icon('upload', 21)}</div><div class="tx"><div class="t">Import existing GIS data</div><div class="d">GeoJSON, Shapefile (.zip) or KML — layers & fields are created automatically</div></div><div class="chev">${icon('chevron', 18)}</div></div>
+      <div class="tpl" id="wScratch"><div class="ic">${icon('plus', 21)}</div><div class="tx"><div class="t">Start from scratch</div><div class="d">Create your first layer / feature class and define its fields</div></div><div class="chev">${icon('chevron', 18)}</div></div>`;
+    this.openSheet('Set up your project', body);
+    document.getElementById('wImport').onclick = () => this.navTo(this.openImport);
+    document.getElementById('wScratch').onclick = () => this.navTo(this.layerEditor, [null]);
+  },
+
+  /* ---------- After a layer is saved: add another or start collecting ---------- */
+  afterLayerSaved(layer) {
+    const layers = this.state.layers.filter((l) => l.projectId === this.state.project.id);
+    const body = `
+      <div class="note" style="margin-bottom:14px">Layer <b>${esc(layer.name)}</b> saved (${layer.geomType}, ${layer.fields.length} field${layer.fields.length !== 1 ? 's' : ''}). Project now has ${layers.length} layer${layers.length !== 1 ? 's' : ''}.</div>
+      <div class="tpl" id="wAnother"><div class="ic">${icon('plus', 21)}</div><div class="tx"><div class="t">Add another layer</div><div class="d">e.g. PIPE, MANHOLE, VALVE…</div></div><div class="chev">${icon('chevron', 18)}</div></div>
+      <div class="tpl" id="wCollect"><div class="ic">${icon('point', 21)}</div><div class="tx"><div class="t">Start collecting</div><div class="d">Capture your first ${esc(layer.name)} record</div></div><div class="chev">${icon('chevron', 18)}</div></div>
+      <div class="tpl" id="wLayers"><div class="ic">${icon('stack', 21)}</div><div class="tx"><div class="t">Review layers</div><div class="d">Symbology, fields, visibility</div></div><div class="chev">${icon('chevron', 18)}</div></div>`;
+    this.openSheet('Layer saved', body);
+    document.getElementById('wAnother').onclick = () => this.navTo(this.layerEditor, [null]);
+    document.getElementById('wCollect').onclick = () => { this.state.activeLayer = layer; this.rootNav(this.startCollect); };
+    document.getElementById('wLayers').onclick = () => this.rootNav(this.openLayers);
+  },
+});
+
+/* ============================================================
+   Part 8 — Custom GeoTIFF imagery + multi-format GIS import
+   ============================================================ */
+Object.assign(App, {
+  /* ---------- Custom imagery: upload a georeferenced GeoTIFF, rendered in-app ---------- */
+  wireImagery() {
+    const btn = document.getElementById('bmAddImagery');
+    const input = document.getElementById('geotiffInput');
+    if (!btn || !input) return;
+    btn.onclick = () => {
+      if (typeof parseGeoraster === 'undefined' || typeof GeoRasterLayer === 'undefined') { this.toast('Imagery engine still loading — try again in a moment (needs one online load)', 'err'); return; }
+      input.click();
+    };
+    input.onchange = async (e) => {
+      const f = e.target.files[0]; e.target.value = '';
+      if (!f) return;
+      await this.loadGeoTIFF(f, true);
+    };
+    document.getElementById('bmImageryOpacity').oninput = (ev) => { if (this._imageryLayer) this._imageryLayer.setOpacity(+ev.target.value / 100); };
+    document.getElementById('bmImageryRemove').onclick = async () => {
+      if (this._imageryLayer && this.state.map) this.state.map.removeLayer(this._imageryLayer);
+      this._imageryLayer = null;
+      document.getElementById('bmImageryRow').style.display = 'none';
+      if (this.state.project) { await Media.remove('geotiff_' + this.state.project.id); await DB.del('settings', 'imagery_' + this.state.project.id).catch(() => {}); }
+      this.toast('Imagery removed');
+    };
+  },
+  async loadGeoTIFF(fileOrBlob, persist) {
+    if (!this.state.map) { this.toast('Map not ready', 'err'); return; }
+    if (!this.state.project) { this.toast('Open a project first', 'err'); return; }
+    this.toast('Reading GeoTIFF…');
+    try {
+      const buf = await fileOrBlob.arrayBuffer();
+      const georaster = await parseGeoraster(buf);
+      if (this._imageryLayer) this.state.map.removeLayer(this._imageryLayer);
+      this._imageryLayer = new GeoRasterLayer({ georaster, opacity: 1, resolution: 256 });
+      this._imageryLayer.addTo(this.state.map);
+      try { this.state.map.fitBounds(this._imageryLayer.getBounds()); } catch {}
+      const row = document.getElementById('bmImageryRow');
+      row.style.display = 'flex';
+      document.getElementById('bmImageryName').textContent = fileOrBlob.name || 'imagery';
+      document.getElementById('bmImageryOpacity').value = 100;
+      if (persist) {
+        await Media.save('geotiff_' + this.state.project.id, fileOrBlob);
+        await DB.put('settings', { key: 'imagery_' + this.state.project.id, name: fileOrBlob.name || 'imagery', savedAt: nowISO() });
+      }
+      this.toast('Imagery loaded — zoom in for full detail', 'ok');
+      this.renderAllLayers(); // keep features above imagery
+    } catch (err) {
+      console.warn('GeoTIFF load failed', err);
+      this.toast('Could not read this GeoTIFF. It must be a georeferenced .tif (WGS84 or UTM work best).', 'err');
+    }
+  },
+  // Restore saved imagery when the project opens
+  async restoreImagery() {
+    if (this._imageryLayer && this.state.map) { this.state.map.removeLayer(this._imageryLayer); this._imageryLayer = null; }
+    const row = document.getElementById('bmImageryRow'); if (row) row.style.display = 'none';
+    if (!this.state.project) return;
+    const meta = await DB.get('settings', 'imagery_' + this.state.project.id).catch(() => null);
+    if (!meta) return;
+    const blob = await Media.blob('geotiff_' + this.state.project.id);
+    if (!blob) return;
+    if (typeof parseGeoraster === 'undefined') { setTimeout(() => this.restoreImagery(), 2500); return; } // lib still loading
+    blob.name = meta.name;
+    await this.loadGeoTIFF(blob, false);
+  },
+
+  /* ---------- Multi-format import: GeoJSON / Shapefile(.zip) / KML ---------- */
+  openImport() {
+    if (!this.state.project) { this.toast('Select a project first', 'err'); return; }
+    const layers = this.state.layers.filter((l) => l.projectId === this.state.project.id);
+    const body = `
+      <div class="note" style="margin-bottom:12px">Import <b>GeoJSON</b> (.geojson/.json), <b>Shapefile</b> (.zip) or <b>KML</b> (.kml). Layers, fields and symbology are created automatically from the data, and every feature stays fully editable — geometry and attributes.</div>
+      <input type="file" id="impFile" accept=".geojson,.json,.kml,.zip,application/geo+json,application/json,application/vnd.google-earth.kml+xml,application/zip" hidden />
+      <button class="btn btn-primary btn-block btn-lg" id="impBtn">${icon('upload', 17)} Choose file to import</button>
+      ${layers.length ? `<div class="field" style="margin-top:14px"><label class="lbl">Or import into an existing layer (matching geometry only)</label><select class="sel" id="impLayer"><option value="">— create new layer(s) automatically —</option>${layers.map((l) => `<option value="${l.id}">${esc(l.name)} (${l.geomType})</option>`).join('')}</select></div>` : ''}
+      <div id="impStatus" class="muted" style="margin-top:12px"></div>`;
+    this.openSheet('Import GIS data', body);
+    const file = document.getElementById('impFile');
+    document.getElementById('impBtn').onclick = () => file.click();
+    file.onchange = async (e) => {
+      const f = e.target.files[0]; e.target.value = '';
+      if (!f) return;
+      const status = document.getElementById('impStatus');
+      status.textContent = 'Reading ' + f.name + '…';
+      try {
+        const gj = await this.parseGISFile(f);
+        const targetSel = document.getElementById('impLayer');
+        await this.importGeoJSON(gj, f.name, targetSel ? targetSel.value : '');
+      } catch (err) {
+        console.warn('import failed', err);
+        status.textContent = '';
+        this.toast('Import failed: ' + (err.message || 'unreadable file'), 'err');
+      }
+    };
+  },
+
+  async parseGISFile(f) {
+    const name = (f.name || '').toLowerCase();
+    if (name.endsWith('.zip')) {
+      if (typeof shp === 'undefined') throw new Error('Shapefile engine still loading — try again (needs one online load)');
+      const buf = await f.arrayBuffer();
+      const out = await shp(buf); // FeatureCollection or array of them (multi-layer zip)
+      if (Array.isArray(out)) {
+        const merged = { type: 'FeatureCollection', features: [] };
+        out.forEach((fc) => { (fc.features || []).forEach((ft) => { ft.properties = ft.properties || {}; ft.properties.__source_layer = fc.fileName || ''; merged.features.push(ft); }); });
+        return merged;
+      }
+      return out;
+    }
+    if (name.endsWith('.kml')) {
+      const text = await f.text();
+      const dom = new DOMParser().parseFromString(text, 'text/xml');
+      if (typeof toGeoJSON !== 'undefined' && toGeoJSON.kml) return toGeoJSON.kml(dom);
+      if (typeof window.toGeoJSON !== 'undefined') return window.toGeoJSON.kml(dom);
+      throw new Error('KML engine still loading — try again (needs one online load)');
+    }
+    // GeoJSON
+    const text = await f.text();
+    return JSON.parse(text);
+  },
+
+  // Import a FeatureCollection. If targetLayerId given, features with matching geometry go into it;
+  // otherwise layers are created automatically per geometry type with fields derived from properties.
+  async importGeoJSON(gj, sourceName, targetLayerId) {
+    let feats = gj.type === 'FeatureCollection' ? (gj.features || []) : (gj.type === 'Feature' ? [gj] : []);
+    // explode Multi* geometries into single-part features so everything is editable
+    const exploded = [];
+    for (const f of feats) {
+      if (!f || !f.geometry) continue;
+      const g = f.geometry, p = f.properties || {};
+      if (g.type === 'MultiPoint') g.coordinates.forEach((c) => exploded.push({ geometry: { type: 'Point', coordinates: c }, properties: p }));
+      else if (g.type === 'MultiLineString') g.coordinates.forEach((c) => exploded.push({ geometry: { type: 'LineString', coordinates: c }, properties: p }));
+      else if (g.type === 'MultiPolygon') g.coordinates.forEach((c) => exploded.push({ geometry: { type: 'Polygon', coordinates: c }, properties: p }));
+      else if (['Point', 'LineString', 'Polygon'].includes(g.type)) exploded.push({ geometry: g, properties: p });
+      // GeometryCollections and others skipped
+    }
+    if (!exploded.length) throw new Error('no importable Point/Line/Polygon features found');
+
+    const byType = { Point: [], LineString: [], Polygon: [] };
+    exploded.forEach((f) => byType[f.geometry.type].push(f));
+    const typeMap = { Point: 'point', LineString: 'line', Polygon: 'polygon' };
+    const base = (sourceName || 'import').replace(/\.(geojson|json|kml|zip)$/i, '').replace(/[^\w\- ]+/g, '').trim() || 'IMPORT';
+
+    let totalImported = 0; const layersTouched = [];
+    for (const [gtype, list] of Object.entries(byType)) {
+      if (!list.length) continue;
+      let layer = null;
+      if (targetLayerId) {
+        const cand = this.state.layers.find((l) => l.id === targetLayerId);
+        if (cand && cand.geomType === typeMap[gtype]) layer = cand;
+        else if (cand) continue; // geometry mismatch with chosen layer — skip this type
+      }
+      if (!layer) {
+        // auto-create a layer with fields derived from properties
+        const fieldKeys = new Set();
+        list.slice(0, 200).forEach((f) => Object.keys(f.properties || {}).forEach((k) => fieldKeys.add(k)));
+        const fields = [...fieldKeys].filter((k) => k !== '__source_layer').slice(0, 30).map((k) => {
+          const sample = list.find((f) => f.properties && f.properties[k] != null);
+          const v = sample ? sample.properties[k] : '';
+          return { id: uid('f'), label: k, key: k.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''), type: (typeof v === 'number') ? 'number' : 'text', required: false };
+        });
+        const suffix = Object.values(byType).filter((x) => x.length).length > 1 ? '_' + typeMap[gtype].toUpperCase() : '';
+        layer = { id: uid('lyr'), projectId: this.state.project.id, name: (base + suffix).toUpperCase(), geomType: typeMap[gtype], fields, symbology: this.defaultSymb(typeMap[gtype], this.nextLayerColor()), createdAt: nowISO(), imported: true, sourceFile: sourceName };
+        await DB.put('layers', layer);
+        this.state.layers.push(layer);
+      }
+      layersTouched.push(layer.name);
+      for (const f of list) {
+        const props = f.properties || {};
+        const data = {};
+        layer.fields.forEach((fl) => { const hit = Object.keys(props).find((k) => k.toLowerCase() === fl.key || k === fl.label); if (hit != null && props[hit] != null) data[fl.key] = String(props[hit]); });
+        const g = f.geometry;
+        const c0 = g.type === 'Point' ? g.coordinates : (g.type === 'LineString' ? g.coordinates[0] : g.coordinates[0][0]);
+        const z = (g.type === 'Point' && g.coordinates.length > 2) ? g.coordinates[2] : (props.Z_Elevation != null ? +props.Z_Elevation : null);
+        const rec = { id: uid('rec'), projectId: this.state.project.id, layerId: layer.id, layerName: layer.name, geomType: layer.geomType, data, geometry: g, location: { lat: c0[1], lng: c0[0], z, accuracy: null }, media: [], surveyor: props.surveyor || this.state.user.name, role: props.role || this.state.user.role, status: 'completed', createdAt: nowISO(), updatedAt: nowISO(), imported: true };
+        await DB.put('records', rec);
+        this.state.records.unshift(rec);
+        totalImported++;
+      }
+    }
+    this.renderAllLayers(); this.refreshBarSub();
+    this.closeSheet();
+    this.toast(`Imported ${totalImported} feature${totalImported !== 1 ? 's' : ''} into ${[...new Set(layersTouched)].join(', ')}`, 'ok');
+    // zoom to imported data
+    const first = this.state.records.find((r) => r.imported && r.projectId === this.state.project.id);
+    if (first && this.state.map) { const g = Exporter.geometryOf(first); const c = g.type === 'Point' ? g.coordinates : (g.type === 'LineString' ? g.coordinates[0] : g.coordinates[0][0]); this.state.map.setView([c[1], c[0]], 15); }
+    setTimeout(() => this.updateGuidance(), 600);
   },
 });
 

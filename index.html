@@ -28,6 +28,13 @@
 
     <div class="gps-pill" id="gpsPill"><span class="d" id="gpsDot"></span><span id="gpsAccTxt">±— m</span><span class="hdg" id="gpsHdgWrap" style="display:none"><svg viewBox="0 0 24 24" id="gpsHdgArrow" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg><span id="gpsSpeedTxt"></span></span></div>
 
+    <!-- Contextual guidance banner: tells the user the next step -->
+    <div class="guide-banner" id="guideBanner">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+      <div class="gb-txt"><b id="gbTitle"></b><span id="gbMsg"></span></div>
+      <button class="gb-act" id="gbAction"></button>
+    </div>
+
     <header class="appbar">
       <div class="brand">
         <div class="mark" id="logoMark"></div>
@@ -52,6 +59,19 @@
       <button class="bm-opt" data-bm="satellite"><div class="thumb bm-sat"></div><div class="nm">Satellite</div></button>
       <button class="bm-opt" data-bm="streets"><div class="thumb bm-str"></div><div class="nm">Streets</div></button>
       <button class="bm-opt" data-bm="topographic"><div class="thumb bm-topo"></div><div class="nm">Topographic</div></button>
+      <button class="bm-imagery" id="bmAddImagery">+ My imagery (GeoTIFF)</button>
+      <div class="bm-imagery-row" id="bmImageryRow" style="display:none">
+        <span class="nm" id="bmImageryName">imagery</span>
+        <input type="range" id="bmImageryOpacity" min="10" max="100" value="100" title="Opacity" />
+        <button id="bmImageryRemove" title="Remove imagery">✕</button>
+      </div>
+      <input type="file" id="geotiffInput" accept=".tif,.tiff,image/tiff" hidden />
+    </div>
+
+    <!-- Quick layer visibility panel (Esri layer-list pattern) -->
+    <div class="layers-panel" id="layersPanel">
+      <div class="lp-head">Layers <button class="btn-text" id="lpManage" style="padding:2px 6px">Manage</button></div>
+      <div id="lpList"></div>
     </div>
 
     <!-- Sketch bar — line/polygon drawing only. Tap to add vertices; Finish or double-tap to complete. -->
@@ -109,6 +129,10 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/shpwrite/0.3.2/shpwrite.js"></script>
+  <script src="https://unpkg.com/shpjs@4.0.4/dist/shp.js" defer></script>
+  <script src="https://unpkg.com/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js" defer></script>
+  <script src="https://unpkg.com/georaster@1.6.0/dist/georaster.browser.bundle.min.js" defer></script>
+  <script src="https://unpkg.com/georaster-layer-for-leaflet@3.10.0/dist/georaster-layer-for-leaflet.min.js" defer></script>
   <script src="js/icons.js"></script>
   <script src="js/db.js"></script>
   <script src="js/geo.js"></script>

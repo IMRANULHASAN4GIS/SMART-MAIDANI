@@ -123,24 +123,32 @@ ${placemarks}
   }
 
   /* ---------- PDF report (print window) ---------- */
-  function openPDFReport(records, project) {
+  async function openPDFReport(records, project) {
     const win = window.open('', '_blank');
     if (!win) return false;
-    const rows = records.map((r) => {
+    const parts = [];
+    for (const r of records) {
       const g = geometryOf(r);
       let loc = '';
       if (g && g.type === 'Point') loc = `${g.coordinates[1].toFixed(6)}, ${g.coordinates[0].toFixed(6)}`;
       else if (g) loc = `${g.type} (${g.coordinates.flat(2).length / 2} vertices)`;
       const photos = (r.media || []).filter((m) => m.type === 'photo').slice(0, 4);
-      return `
+      const photoUrls = [];
+      for (const p of photos) {
+        const u = (typeof Media !== 'undefined') ? await Media.dataUrlOf(p) : p.dataUrl;
+        if (u) photoUrls.push(u);
+      }
+      parts.push(`
       <div class="rec">
-        <div class="rh">${esc(r.formName || 'Record')} — ${esc((r.data && (r.data.asset_id || r.data.line_id || r.data.name)) || r.id)}</div>
+        <div class="rh">${esc(r.layerName || r.formName || 'Record')} — ${esc((r.data && (r.data.asset_id || r.data.line_id || r.data.name)) || r.id)}</div>
         <div class="rm">Status: ${esc(r.status)} · Surveyor: ${esc(r.surveyor || '—')} · ${esc(fmtDate(r.updatedAt))}</div>
         <table>${Object.entries(r.data || {}).map(([k, v]) => `<tr><td class="k">${esc(k.replace(/_/g, ' '))}</td><td>${esc(v)}</td></tr>`).join('')}
-          ${loc ? `<tr><td class="k">location</td><td>${esc(loc)}${r.location ? ` (±${Math.round(r.location.accuracy)}m)` : ''}</td></tr>` : ''}</table>
-        ${photos.length ? `<div class="ph">${photos.map((p) => `<img src="${p.dataUrl}" />`).join('')}</div>` : ''}
-      </div>`;
-    }).join('');
+          ${loc ? `<tr><td class="k">location</td><td>${esc(loc)}${r.location && r.location.accuracy != null ? ` (±${Math.round(r.location.accuracy)}m)` : ''}</td></tr>` : ''}
+          ${r.location && r.location.z != null ? `<tr><td class="k">Z_Elevation</td><td>${(+r.location.z).toFixed(2)} m</td></tr>` : ''}</table>
+        ${photoUrls.length ? `<div class="ph">${photoUrls.map((u) => `<img src="${u}" />`).join('')}</div>` : ''}
+      </div>`);
+    }
+    const rows = parts.join('');
     win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(project.name)} — Field Report</title>
       <style>
         body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;padding:28px;color:#141A1F;}
@@ -192,19 +200,25 @@ ${placemarks}
     const shp = toShapefileZip(records, project.name);
     if (shp) zip.file('data/shapefile.zip', shp);
 
-    // Media
+    // Media — blobs from the media store (with legacy dataUrl fallback)
     const mediaFolder = zip.folder('media');
     let mediaManifest = [];
-    records.forEach((r) => {
-      (r.media || []).forEach((m, i) => {
-        if (!m.dataUrl) return;
-        const ext = m.type === 'video' ? 'webm' : 'jpg';
+    for (const r of records) {
+      const list = r.media || [];
+      for (let i = 0; i < list.length; i++) {
+        const m = list[i];
+        const ext = m.type === 'video' ? ((m.mime || '').includes('mp4') ? 'mp4' : 'webm') : (m.type === 'photo' ? 'jpg' : ((m.name || 'file').split('.').pop() || 'bin'));
         const fname = `${r.id}_${m.kind || m.type}_${i}.${ext}`;
-        const base64 = m.dataUrl.split(',')[1];
-        mediaFolder.file(fname, base64, { base64: true });
+        if (m.dataUrl) {
+          mediaFolder.file(fname, m.dataUrl.split(',')[1], { base64: true });
+        } else if (typeof Media !== 'undefined') {
+          const blob = await Media.blob(m.id);
+          if (!blob) continue;
+          mediaFolder.file(fname, blob);
+        } else continue;
         mediaManifest.push({ record_id: r.id, file: `media/${fname}`, type: m.type, kind: m.kind, lat: m.lat, lng: m.lng, captured_at: m.capturedAt });
-      });
-    });
+      }
+    }
     zip.file('media/manifest.json', JSON.stringify(mediaManifest, null, 2));
 
     zip.file('README.txt',

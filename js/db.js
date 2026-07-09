@@ -48,3 +48,31 @@ const uid = (p = 'id') => `${p}_${Date.now().toString(36)}_${Math.random().toStr
 const nowISO = () => new Date().toISOString();
 const fmtDate = (iso) => { if (!iso) return '—'; const d = new Date(iso); return d.toLocaleDateString(undefined, { month: 'short', day: '2-digit', year: 'numeric' }) + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }); };
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/* ============================================================
+   Media blob storage — photos/videos stored as binary Blobs in
+   the dedicated 'media' store; records hold metadata references.
+   ============================================================ */
+const Media = {
+  async save(id, blob) { await DB.put('media', { id, blob, savedAt: nowISO() }); return id; },
+  async blob(id) { const row = await DB.get('media', id); return row ? row.blob : null; },
+  async remove(id) { try { await DB.del('media', id); } catch {} },
+  _urls: {},
+  // Object URL for display; cached per id, revoke via releaseAll when a view closes.
+  async url(m) {
+    if (m.dataUrl) return m.dataUrl;               // legacy records (pre-blob) keep working
+    if (this._urls[m.id]) return this._urls[m.id];
+    const b = await this.blob(m.id);
+    if (!b) return null;
+    const u = URL.createObjectURL(b);
+    this._urls[m.id] = u;
+    return u;
+  },
+  releaseAll() { Object.values(this._urls).forEach((u) => URL.revokeObjectURL(u)); this._urls = {}; },
+  async dataUrlOf(m) {                              // for PDF export embedding
+    if (m.dataUrl) return m.dataUrl;
+    const b = await this.blob(m.id);
+    if (!b) return null;
+    return new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => res(null); r.readAsDataURL(b); });
+  },
+};
