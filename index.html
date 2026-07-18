@@ -43,7 +43,38 @@
       <div class="spacer"></div>
       <div class="net online" id="net"><span class="d"></span><span id="netTxt">Online</span></div>
       <button class="bar-btn" id="menuBtn" aria-label="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+      <nav class="edit-tools" id="editTools" aria-label="Geometry editing tools">
+        <button class="editor-menu-button" id="editorMenuBtn"><span class="session-dot"></span><span>Editor</span><span class="menu-caret">▾</span></button>
+        <span class="tool-separator"></span>
+        <button class="edit-tool" id="toolSelect" title="Edit Tool — select and double-click features"><svg viewBox="0 0 24 24"><path d="m5 3 14 8-6 2-2 6z"/></svg><span>Edit</span></button>
+        <button class="edit-tool" id="toolBoxSelect" title="Select by rectangle"><svg viewBox="0 0 24 24"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path stroke-dasharray="2 3" d="M9 4h6M20 9v6M15 20H9M4 15V9"/></svg><span>Select</span></button>
+        <button class="edit-tool" id="toolPan" title="Pan"><svg viewBox="0 0 24 24"><path d="M8 11V7a2 2 0 0 1 4 0v3-5a2 2 0 0 1 4 0v5-3a2 2 0 0 1 4 0v7c0 5-3 8-8 8-3 0-5-2-7-5l-2-3a2 2 0 0 1 3-3l2 2z"/></svg><span>Pan</span></button>
+        <span class="tool-separator"></span>
+        <button class="edit-tool" id="toolCreate" title="Create Features"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>Create</span></button>
+        <button class="edit-tool" id="toolSnapping" title="Snapping ON — vertices and edges"><svg viewBox="0 0 24 24"><path d="M6 3v9a6 6 0 0 0 12 0V3M6 7h4M14 7h4"/></svg><span>Snap ON</span></button>
+        <button class="edit-tool" id="toolModify" disabled title="Edit Vertices"><svg viewBox="0 0 24 24"><path d="M4 18 9 6l6 12 5-9"/><circle cx="4" cy="18" r="2"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="18" r="2"/><circle cx="20" cy="9" r="2"/></svg><span>Vertices</span></button>
+        <button class="edit-tool" id="toolMove" disabled title="Move Feature"><svg viewBox="0 0 24 24"><path d="M12 2v20M2 12h20M12 2l-3 3m3-3 3 3M12 22l-3-3m3 3 3-3M2 12l3-3m-3 3 3 3m17-3-3-3m3 3-3 3"/></svg><span>Move</span></button>
+        <button class="edit-tool" id="toolRotate" disabled title="Rotate Feature"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2 5.3"/><path d="M20 4v7h-7"/></svg><span>Rotate</span></button>
+        <button class="edit-tool" id="toolReshape" disabled title="Reshape Feature"><svg viewBox="0 0 24 24"><path d="M3 17c5-10 11 5 18-7"/><circle cx="3" cy="17" r="2"/><circle cx="21" cy="10" r="2"/></svg><span>Reshape</span></button>
+        <button class="edit-tool" id="toolCutPolygon" disabled title="Cut Polygons"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="m2 17 20-10"/></svg><span>Cut</span></button>
+        <button class="edit-tool" id="toolSplit" disabled title="Split Line"><svg viewBox="0 0 24 24"><path d="M4 18 10 6M14 18l6-12"/><path d="m8 13 8-4M8 9l8 4"/></svg><span>Split</span></button>
+        <button class="edit-tool" id="toolMerge" disabled title="Merge selected features"><svg viewBox="0 0 24 24"><path d="M4 6h6v6H4zM14 12h6v6h-6z"/><path d="m10 9 4 6"/></svg><span>Merge</span></button>
+        <button class="edit-tool danger" id="toolDelete" disabled title="Delete selected features"><svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14M10 10v6M14 10v6"/></svg><span>Delete</span></button>
+        <span class="tool-separator"></span>
+        <button class="edit-tool" id="toolAttributes" disabled title="Attributes"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4zM8 8h8M8 12h8M8 16h5"/></svg><span>Attributes</span></button>
+        <button class="edit-tool" id="toolSketchProps" disabled title="Sketch Properties"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4zM8 8h2M8 12h2M8 16h2M13 8h3M13 12h3M13 16h3"/></svg><span>Sketch</span></button>
+        <button class="edit-tool" id="toolUndo" disabled title="Undo"><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg><span>Undo</span></button>
+        <button class="edit-tool" id="toolRedo" disabled title="Redo"><svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg><span>Redo</span></button>
+        <button class="edit-tool" id="toolSaveEdits" title="Save Edits"><svg viewBox="0 0 24 24"><path d="M5 3h12l2 2v16H5zM8 3v6h8V3M8 21v-8h8v8"/></svg><span>Save</span></button>
+        <span class="edit-context" id="editContext" aria-live="polite">Start editing</span>
+      </nav>
     </header>
+
+    <div class="editor-menu" id="editorMenu">
+      <button id="editorStart">Start Editing</button>
+      <button id="editorSave">Save Edits</button>
+      <button id="editorStop">Stop Editing</button>
+    </div>
 
     <div class="map-ctrls right">
       <div class="zoom-cluster">
@@ -51,10 +82,10 @@
         <button class="fab zoom" id="zoomOut" aria-label="Zoom out"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
       </div>
       <button class="fab" id="layersBtn" aria-label="Layers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 10 5-10 5L2 7z"/><path d="m2 12 10 5 10-5M2 17l10 5 10-5"/></svg></button>
+      <button class="fab basemap-fab" id="basemapBtn" aria-label="Basemap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18-6 3V6l6-3 6 3 6-3v15l-6 3z"/><path d="M9 3v15M15 6v15"/></svg></button>
       <button class="fab locate" id="locateBtn" aria-label="Locate me"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/></svg></button>
     </div>
 
-    <button class="fab basemap-fab" id="basemapBtn" aria-label="Basemap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18-6 3V6l6-3 6 3 6-3v15l-6 3z"/><path d="M9 3v15M15 6v15"/></svg></button>
     <div class="basemap-panel" id="basemapPanel">
       <button class="bm-opt" data-bm="satellite"><div class="thumb bm-sat"></div><div class="nm">Satellite</div></button>
       <button class="bm-opt" data-bm="streets"><div class="thumb bm-str"></div><div class="nm">Streets</div></button>
@@ -77,9 +108,11 @@
     <!-- Sketch bar — line/polygon drawing only. Tap to add vertices; Finish or double-tap to complete. -->
     <div class="sketch-bar" id="sketchBar">
       <button class="sk-btn" id="skCancel" aria-label="Cancel sketch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
-      <div class="sk-info"><span id="sketchCount">0 points</span><span class="sk-hint">tap map to add · double-tap to finish</span></div>
+      <div class="sk-info"><span id="sketchCount">0 points</span><span class="sk-hint" id="skHint">tap map to add · double-tap to finish</span></div>
       <button class="sk-btn" id="skUndo" aria-label="Undo last point"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
-      <button class="sk-finish" id="skFinish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 6 9 17l-5-5"/></svg>Finish</button>
+      <button class="sk-btn sk-editonly" id="skRedo" aria-label="Redo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
+      <button class="sk-delete-vertex sk-editonly" id="skDeleteVertex" disabled>Delete vertex</button>
+      <button class="sk-finish" id="skFinish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 6 9 17l-5-5"/></svg>Save geometry</button>
     </div>
 
     <div class="collect" id="collectBar">
@@ -128,11 +161,11 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.11.0/proj4.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/shpwrite/0.3.2/shpwrite.js"></script>
   <script src="https://unpkg.com/shpjs@4.0.4/dist/shp.js" defer></script>
   <script src="https://unpkg.com/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js" defer></script>
   <script src="https://unpkg.com/georaster@1.6.0/dist/georaster.browser.bundle.min.js" defer></script>
   <script src="https://unpkg.com/georaster-layer-for-leaflet@3.10.0/dist/georaster-layer-for-leaflet.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js" defer></script>
   <script src="js/icons.js"></script>
   <script src="js/db.js"></script>
   <script src="js/geo.js"></script>

@@ -2,7 +2,7 @@
 
 **Field GIS data collection — build your own layers, capture anywhere, export for GIS.**
 
-Smart Maidani is an offline-first Progressive Web App (PWA) modeled on the Esri Field Maps experience. The map fills the whole screen; forms and lists slide over it. Surveyors register once, create their own **feature-class layers** (INLET, PIPE, MANHOLE — whatever they need), define the attributes for each, then collect points, lines and polygons that all flow into the right layer. Every feature gets an auto-filled **Z-Elevation**, coordinates in the **coordinate system you choose**, geotagged photos and video, and one-tap export to GeoJSON, KML, Shapefile, CSV, Excel, PDF or a full ZIP.
+Smart Maidani is an offline-first Progressive Web App (PWA) modeled on the Esri Field Maps experience. The map fills the whole screen; forms and lists slide over it. Surveyors register once, create their own **Asset Types**, define the attributes for each, then collect points, lines and polygons that all flow into the correct feature class. Every feature gets an auto-filled **Z-Elevation**, coordinates in the **coordinate system you choose**, geotagged photos and video, and one-tap export to GeoJSON, KML, Shapefile, CSV, Excel, PDF or a full ZIP.
 
 No build step. No framework. No backend required. Static files you host on GitHub Pages.
 
@@ -10,7 +10,10 @@ No build step. No framework. No backend required. Static files you host on GitHu
 
 ## What makes it a real GIS tool
 
-- **You define the feature classes.** No fixed templates. Create a layer called "INLET", pick its geometry (point/line/polygon), add your own fields (text, number, dropdown, yes/no, date, time). Collect 100 inlets → 100 records in the one INLET layer, exactly like a GIS feature class.
+- **You define the Asset Types.** No fixed templates. Name the asset type, pick its geometry (point/line/polygon), and add fields (text, number, dropdown, yes/no, date, time). Every captured asset becomes a feature in that type's feature class.
+- **ArcMap-style editing.** Arrow select, rectangle select, double-click vertex editing, vertex insert/move/delete, move, rotate, reshape, split, cut, merge, undo/redo and an explicit snapping ON/OFF toggle.
+- **Portable media links.** Direct Excel and Shapefile downloads are self-contained ZIP bundles with their referenced `media/` folder, real spreadsheet hyperlinks and GIS setup files.
+- **Default field route.** GPS travel is saved per project and exported as time-aware GeoJSON with distance, duration and speed statistics.
 - **Full geometry editing.** Move a point, redraw a line or polygon, or delete — after capture.
 - **Load existing data.** Import a GeoJSON into a layer and edit its features on the map.
 - **Per-layer symbology.** Set color, point size, line thickness, fill and opacity for each layer; the map updates live.
@@ -33,11 +36,11 @@ No build step. No framework. No backend required. Static files you host on GitHu
 |--------|------|-------|
 | GeoJSON | `.geojson` | Re-projected to your project CRS; 3D coordinates with Z |
 | KML | `.kml` | WGS 84, for Google Earth |
-| Shapefile | `.zip` | ESRI shapefile set by geometry type |
+| Shapefile | `.zip` | ArcMap-ready feature classes by Asset Type; native `FID` + `OBJECTID` |
 | CSV | `.csv` | Flat attribute table incl. Z_Elevation |
-| Excel | `.xlsx` | Attribute table |
+| Excel | `.xlsx` | Standard `Features` and `Attachments` tables with clickable media |
 | PDF | `.pdf` | Field report with photos |
-| ZIP package | `.zip` | All of the above + geotagged media + README, joined on `record_id` |
+| ZIP package | `.zip` | All formats + FID-named media + `REL_FID`/`REL_OBJECTID` relationship table |
 
 ---
 
@@ -74,7 +77,7 @@ smart-maidani/
 
 ## Libraries (CDN, cached for offline)
 
-Leaflet (maps), proj4js (coordinate systems), JSZip (packaging), SheetJS (Excel), shp-write (Shapefile).
+Leaflet (maps), proj4js (coordinate systems), JSZip (packaging), SheetJS (Excel). The ArcMap-safe Shapefile writer is built into the application.
 
 ## Note on elevation accuracy
 

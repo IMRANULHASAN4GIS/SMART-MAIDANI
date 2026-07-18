@@ -13,6 +13,13 @@ const App = {
     gpsLayer: null, lastFix: null, watchId: null,
     draft: null, placing: null, draw: null,
     editGeom: null,             // { record, layer } when editing geometry on map
+    selectedRecord: null,       // primary selection (editing requires one feature)
+    selectedRecords: [],        // box selection may contain several features
+    activeTool: 'select',       // pan | select | box | create | vertices | move | split
+    editingSession: false,
+    sessionUndo: [], sessionRedo: [],
+    snapping: true,
+    route: { points: [], distanceM: 0, paused: false },
   },
 
   async init() {
@@ -39,7 +46,7 @@ const App = {
         <h1 class="welcome-title">Smart Maidani</h1>
         <p class="welcome-sub">Field GIS data collection — build your own layers, capture anywhere, export for GIS.</p>
       </div>
-      <div class="field"><label class="lbl">Your name <span class="req">*</span></label><input class="inp" id="regName" placeholder="e.g. Ahmed Khan" /></div>
+      <div class="field"><label class="lbl">Your name <span class="req">*</span></label><input class="inp" id="regName" placeholder="Enter Your Name" /></div>
       <div class="field"><label class="lbl">Your role <span class="req">*</span></label>
         <select class="sel" id="regRole">
           <option value="">Select role…</option>
@@ -60,7 +67,7 @@ const App = {
       this.toast(`Welcome, ${name}`, 'ok');
       this.rootNav(this.openProjectPicker);
     };
-    setTimeout(() => document.getElementById('regName').focus(), 300);
+    setTimeout(() => { const el = document.getElementById('regName'); if (el) el.focus(); }, 300);
   },
 
   /* ============================================================
@@ -84,8 +91,16 @@ const App = {
     this.state.map = map;
     this.state.gpsLayer = L.layerGroup().addTo(map);
     map.on('click', (e) => this.onMapClick(e));
+    map.on('mousedown', (e) => this.onBoxSelectStart(e));
+    map.on('mousemove', (e) => this.onBoxSelectMove(e));
+    map.on('mouseup', (e) => this.onBoxSelectEnd(e));
     map.on('dragstart', () => { if (this.state.follow) { this.state.follow = false; this.updateLocateBtn(); } });
-    map.on('dblclick', (e) => { if (this.state.draw || (this.state.editGeom && this.state.editGeom.mode !== 'point')) { this.onMapClick(e); if (this.state.editGeom) this.confirmEditGeom(); else this.confirmDraw(); } });
+    map.on('dblclick', () => {
+      if (this.state.draw) {
+        const c = this.state.draw.coords; if (c.length > 1) { const a = c[c.length - 1], b = c[c.length - 2]; if (Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) < 1e-8) c.pop(); }
+        this.confirmDraw();
+      } else if (this.state.editGeom && this.state.editGeom.mode !== 'point') this.confirmEditGeom();
+    });
     this.locate(true);
   },
 
@@ -99,25 +114,524 @@ const App = {
     document.addEventListener('click', (e) => { const p = $('layersPanel'), btn = $('layersBtn'); if (p.classList.contains('show') && !p.contains(e.target) && !btn.contains(e.target)) p.classList.remove('show'); });
     $('locateBtn').onclick = () => this.locate(false);
     $('collectBtn').onclick = () => this.rootNav(this.startCollect);
+    $('toolCreate').onclick = () => this.rootNav(this.startCollect);
+    $('toolSelect').onclick = () => this.beginFeatureSelection();
+    $('toolPan').onclick = () => this.setActiveTool('pan');
+    $('toolBoxSelect').onclick = () => this.beginBoxSelection();
+    $('toolModify').onclick = () => this.modifySelectedFeature();
+    $('toolMove').onclick = () => this.moveSelectedFeature();
+    $('toolSplit').onclick = () => this.beginSplitSelectedLine();
+    $('toolDelete').onclick = () => this.deleteSelectedFeature();
+    $('toolRotate').onclick = () => this.openRotateTool();
+    $('toolReshape').onclick = () => this.beginReshapeFeature();
+    $('toolCutPolygon').onclick = () => this.beginCutPolygon();
+    $('toolMerge').onclick = () => this.mergeSelectedFeatures();
+    $('toolAttributes').onclick = () => this.openSelectedAttributes();
+    $('toolSketchProps').onclick = () => this.openSketchProperties();
+    $('toolUndo').onclick = () => this.undoEdit();
+    $('toolRedo').onclick = () => this.redoEdit();
+    $('toolSaveEdits').onclick = () => this.saveEditSession();
+    $('toolSnapping').onclick = () => { this.state.snapping = !this.state.snapping; this.updateEditToolbar(); this.toast(`Snapping ${this.state.snapping ? 'on' : 'off'}`, 'ok'); };
+    $('editorMenuBtn').onclick = (e) => { e.stopPropagation(); $('editorMenu').classList.toggle('show'); };
+    $('editorStart').onclick = () => this.startEditing();
+    $('editorSave').onclick = () => this.saveEditSession();
+    $('editorStop').onclick = () => this.stopEditing();
+    document.addEventListener('click', (e) => { const p = $('editorMenu'), b = $('editorMenuBtn'); if (p.classList.contains('show') && !p.contains(e.target) && !b.contains(e.target)) p.classList.remove('show'); });
     $('navList').onclick = () => this.rootNav(this.openRecords);
     $('navExport').onclick = () => this.rootNav(this.openExport);
     $('basemapBtn').onclick = (e) => { e.stopPropagation(); this.toggleBasemapPanel(); };
     document.querySelectorAll('.bm-opt').forEach((b) => b.onclick = () => this.setBasemap(b.dataset.bm));
     document.addEventListener('click', (e) => { const p = $('basemapPanel'), btn = $('basemapBtn'); if (p.classList.contains('show') && !p.contains(e.target) && !btn.contains(e.target)) p.classList.remove('show'); });
     $('tapHintCancel').onclick = () => { if (this.state.editGeom) this.cancelEditGeom(); else this.cancelPlacing(); };
-    $('skCancel').onclick = () => { if (this.state.editGeom) this.cancelEditGeom(); else { this.endDraw(); this.backToForm(); } };
-    $('skUndo').onclick = () => this.undoSketchPoint();
+    $('skCancel').onclick = () => { if (this.state.editGeom) this.cancelEditGeom(); else { const operation = this.state.draw && this.state.draw.operation; this.endDraw(); if (!operation) this.backToForm(); } };
+    $('skUndo').onclick = () => { const eg = this.state.editGeom; if (eg && eg.vertexEdit) this.geomUndo(); else this.undoSketchPoint(); };
+    $('skRedo').onclick = () => this.geomRedo();
+    $('skDeleteVertex').onclick = () => this.deleteActiveVertex();
     $('skFinish').onclick = () => { if (this.state.editGeom) this.confirmEditGeom(); else this.confirmDraw(); };
     $('sheetClose').onclick = () => this.closeSheet();
     $('sheetBack').onclick = () => this.goBack();
     $('scrim').onclick = () => this.closeSheet();
     this.wireCameraControls();
     this.wireImagery();
+    document.addEventListener('keydown', (e) => {
+      if (/INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || '')) return;
+      const key = e.key.toLowerCase();
+      if (key === 'h') this.setActiveTool('pan');
+      else if (key === 'v') this.beginFeatureSelection();
+      else if (key === 'b') this.beginBoxSelection();
+      else if (key === 'e' && !document.getElementById('toolModify').disabled) this.modifySelectedFeature();
+      else if (key === 'm' && !document.getElementById('toolMove').disabled) this.moveSelectedFeature();
+      else if (key === 'x' && !document.getElementById('toolSplit').disabled) this.beginSplitSelectedLine();
+      else if (e.key === 'Delete' && this.state.editGeom && this.state.editGeom.vertexEdit && this.state.editGeom.activeVertex != null) this.deleteActiveVertex();
+      else if (e.key === 'Delete' && !document.getElementById('toolDelete').disabled) this.deleteSelectedFeature();
+      else if (e.key === 'Escape') { if (this.state.editGeom) this.cancelEditGeom(); else if (this.state.draw) this.endDraw(); else if ((this.state.selectedRecords || []).length) this.clearSelection(); else this.beginFeatureSelection(); }
+    });
+    this.updateEditToolbar();
   },
 
   wireNet() {
     const upd = () => { const on = navigator.onLine; const el = document.getElementById('net'); el.className = 'net ' + (on ? 'online' : 'offline'); document.getElementById('netTxt').textContent = on ? 'Online' : 'Offline'; };
-    window.addEventListener('online', upd); window.addEventListener('offline', upd); upd();
+    window.addEventListener('online', () => { upd(); this.backfillMissingZ(); });
+    window.addEventListener('offline', upd);
+    upd();
+    // Records captured offline are missing Z — fill them as soon as we're online.
+    if (navigator.onLine) setTimeout(() => this.backfillMissingZ(), 4000);
+  },
+
+  // Backfill Z_Elevation for every stored record that has coordinates but no Z yet
+  // (i.e. it was captured offline). Sequential + capped so a big backlog can't hammer
+  // the elevation service; runs again on the next online event for any remainder.
+  async backfillMissingZ() {
+    if (this._backfillingZ || !navigator.onLine) return;
+    const pending = this.state.records.filter((r) => r.location && r.location.lat != null && r.location.z == null);
+    if (!pending.length) return;
+    this._backfillingZ = true;
+    let filled = 0;
+    try {
+      for (const rec of pending.slice(0, 40)) {
+        if (!navigator.onLine) break;
+        const before = rec.location.z;
+        await this.backfillZ(rec);
+        if (before == null && rec.location.z != null) filled++;
+        await new Promise((res) => setTimeout(res, 350));
+      }
+    } finally { this._backfillingZ = false; }
+    if (filled) { this.toast(`Z elevation filled for ${filled} offline record${filled === 1 ? '' : 's'}`, 'ok'); this.renderAllLayers(); }
+  },
+
+  /* ---------- persistent header editing workspace ---------- */
+  updateEditToolbar() {
+    const selected = this.state.selectedRecord;
+    const selectedRecords = this.state.selectedRecords || (selected ? [selected] : []);
+    const count = selectedRecords.length;
+    const hasProject = !!this.state.project;
+    const editing = hasProject && this.state.editingSession;
+    const create = document.getElementById('toolCreate');
+    const select = document.getElementById('toolSelect');
+    const modify = document.getElementById('toolModify');
+    const move = document.getElementById('toolMove');
+    const split = document.getElementById('toolSplit');
+    const del = document.getElementById('toolDelete');
+    if (!create) return;
+    document.getElementById('toolPan').disabled = !hasProject;
+    ['toolCreate', 'toolSelect', 'toolBoxSelect'].forEach((id) => { document.getElementById(id).disabled = !editing; });
+    modify.disabled = !editing || count !== 1;
+    move.disabled = !editing || count !== 1;
+    document.getElementById('toolRotate').disabled = !editing || count !== 1 || !selected || selected.geomType === 'point';
+    document.getElementById('toolReshape').disabled = !editing || count !== 1 || !selected || !['line', 'polygon'].includes(selected.geomType);
+    document.getElementById('toolCutPolygon').disabled = !editing || count !== 1 || !selected || selected.geomType !== 'polygon';
+    split.disabled = !editing || count !== 1 || !selected || selected.geomType !== 'line';
+    const mergeOK = count >= 2 && selectedRecords.every((r) => r.layerId === selectedRecords[0].layerId && r.geomType === selectedRecords[0].geomType);
+    document.getElementById('toolMerge').disabled = !editing || !mergeOK;
+    del.disabled = !editing || count === 0;
+    document.getElementById('toolAttributes').disabled = !editing || count !== 1;
+    document.getElementById('toolSketchProps').disabled = !editing || !(this.state.editGeom && this.state.editGeom.vertexEdit);
+    document.getElementById('toolUndo').disabled = !((this.state.editGeom && this.state.editGeom._undo && this.state.editGeom._undo.length) || this.state.sessionUndo.length);
+    document.getElementById('toolRedo').disabled = !((this.state.editGeom && this.state.editGeom._redo && this.state.editGeom._redo.length) || this.state.sessionRedo.length);
+    document.getElementById('toolSaveEdits').disabled = !editing;
+    document.getElementById('toolSnapping').disabled = !editing;
+    document.getElementById('editorStart').disabled = !hasProject || editing;
+    document.getElementById('editorSave').disabled = !editing;
+    document.getElementById('editorStop').disabled = !editing;
+    document.getElementById('editorMenuBtn').classList.toggle('active', editing);
+    const activeId = { pan: 'toolPan', select: 'toolSelect', box: 'toolBoxSelect', create: 'toolCreate', vertices: 'toolModify', move: 'toolMove', split: 'toolSplit', reshape: 'toolReshape', cut: 'toolCutPolygon' }[this.state.activeTool];
+    document.querySelectorAll('.edit-tool').forEach((b) => { const on = b.id === activeId; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); });
+    document.getElementById('toolSnapping').classList.toggle('on', editing && this.state.snapping);
+    document.getElementById('toolSnapping').setAttribute('aria-pressed', editing && this.state.snapping ? 'true' : 'false');
+    document.querySelector('#toolSnapping span').textContent = `Snap ${this.state.snapping ? 'ON' : 'OFF'}`;
+    document.getElementById('toolSnapping').title = `Snapping ${this.state.snapping ? 'ON' : 'OFF'} — vertices and edges`;
+    const context = document.getElementById('editContext');
+    if (!hasProject) context.textContent = 'Open a project';
+    else if (!editing) context.textContent = 'Editor ▸ Start Editing';
+    else if (count > 1) context.textContent = `${count} features selected`;
+    else if (selected) context.textContent = `${selected.layerName || 'Feature'} selected · ${selected.geomType}`;
+    else context.textContent = this.state.activeTool === 'box' ? 'Drag a box across the map' : 'Arrow-select or double-click a feature';
+  },
+  startEditing(silent) {
+    if (!this.state.project) { this.toast('Open a project first', 'err'); return; }
+    this.state.editingSession = true;
+    this.state.sessionUndo = []; this.state.sessionRedo = [];
+    this._editSessionBaseline = JSON.parse(JSON.stringify(this.state.records.filter((r) => r.projectId === this.state.project.id)));
+    document.getElementById('editorMenu').classList.remove('show');
+    this.setActiveTool('select'); this.updateEditToolbar();
+    if (!silent) this.toast('Edit session started', 'ok');
+  },
+  saveEditSession() {
+    if (!this.state.editingSession) return;
+    this._editSessionBaseline = JSON.parse(JSON.stringify(this.state.records.filter((r) => r.projectId === this.state.project.id)));
+    this.state.sessionUndo = []; this.state.sessionRedo = [];
+    document.getElementById('editorMenu').classList.remove('show');
+    this.updateEditToolbar(); this.toast('Edits saved', 'ok');
+  },
+  stopEditing() {
+    if (!this.state.editingSession) return;
+    document.getElementById('editorMenu').classList.remove('show');
+    this.openSheet('Stop Editing', '<div class="note">Choose whether to save or discard all changes made since the edit session started.</div>', `<button class="btn btn-primary flex" id="stopSave">Save and stop</button><button class="btn btn-danger flex" id="stopDiscard">Discard</button><button class="btn btn-ghost" id="stopCancel">Cancel</button>`);
+    document.getElementById('stopSave').onclick = () => this.finishStopEditing(true);
+    document.getElementById('stopDiscard').onclick = () => this.finishStopEditing(false);
+    document.getElementById('stopCancel').onclick = () => this.closeSheet();
+  },
+  async finishStopEditing(save) {
+    if (!save && this._editSessionBaseline) {
+      const pid = this.state.project.id;
+      for (const r of this.state.records.filter((x) => x.projectId === pid)) await DB.del('records', r.id);
+      for (const r of this._editSessionBaseline) await DB.put('records', r);
+      this.state.records = this.state.records.filter((x) => x.projectId !== pid).concat(JSON.parse(JSON.stringify(this._editSessionBaseline)));
+    }
+    if (this.state.editGeom) this.cancelEditGeom();
+    this.state.editingSession = false; this.state.selectedRecord = null; this.state.selectedRecords = [];
+    this.closeSheet(); document.getElementById('editorMenu').classList.remove('show');
+    this.setActiveTool('pan'); this.renderAllLayers(); this.refreshBarSub(); this.updateEditToolbar();
+    this.toast(save ? 'Edits saved · editing stopped' : 'Edits discarded · editing stopped', 'ok');
+  },
+  captureSessionUndo() {
+    if (!this.state.editingSession || !this.state.project) return;
+    this.state.sessionUndo.push(JSON.stringify(this.state.records.filter((r) => r.projectId === this.state.project.id)));
+    if (this.state.sessionUndo.length > 50) this.state.sessionUndo.shift();
+    this.state.sessionRedo = []; this.updateEditToolbar();
+  },
+  async restoreSessionSnapshot(json) {
+    const pid = this.state.project.id, snapshot = JSON.parse(json);
+    for (const r of this.state.records.filter((x) => x.projectId === pid)) await DB.del('records', r.id);
+    for (const r of snapshot) await DB.put('records', r);
+    this.state.records = this.state.records.filter((x) => x.projectId !== pid).concat(snapshot);
+    this.state.selectedRecord = null; this.state.selectedRecords = [];
+    this.renderAllLayers(); this.refreshBarSub(); this.updateEditToolbar();
+  },
+  async undoEdit() {
+    if (this.state.editGeom && this.state.editGeom._undo && this.state.editGeom._undo.length) { this.geomUndo(); return; }
+    if (!this.state.sessionUndo.length) return;
+    this.state.sessionRedo.push(JSON.stringify(this.state.records.filter((r) => r.projectId === this.state.project.id)));
+    await this.restoreSessionSnapshot(this.state.sessionUndo.pop()); this.toast('Edit undone', 'ok');
+  },
+  async redoEdit() {
+    if (this.state.editGeom && this.state.editGeom._redo && this.state.editGeom._redo.length) { this.geomRedo(); return; }
+    if (!this.state.sessionRedo.length) return;
+    this.state.sessionUndo.push(JSON.stringify(this.state.records.filter((r) => r.projectId === this.state.project.id)));
+    await this.restoreSessionSnapshot(this.state.sessionRedo.pop()); this.toast('Edit redone', 'ok');
+  },
+  setActiveTool(tool) {
+    if (!this.state.map) return;
+    this.state.activeTool = tool;
+    this.state.selectingFeature = tool === 'select';
+    this.state.splittingLine = tool === 'split';
+    const mapEl = document.getElementById('map');
+    mapEl.classList.remove('tool-pan', 'tool-select', 'tool-box', 'tool-create', 'tool-vertices', 'tool-move', 'tool-split', 'tool-reshape', 'tool-cut');
+    mapEl.classList.add(`tool-${tool}`);
+    if (tool === 'pan') this.state.map.dragging.enable();
+    else this.state.map.dragging.disable();
+    this.updateEditToolbar();
+  },
+  beginFeatureSelection() {
+    if (!this.state.project) return;
+    this.setActiveTool('select');
+    this.closeSheet();
+    this.guide('Arrow select', 'Click a feature once to select it, or double-click it to edit vertices.', 'Box select', () => this.beginBoxSelection());
+  },
+  beginBoxSelection() {
+    if (!this.state.project) return;
+    this.setActiveTool('box');
+    this.closeSheet();
+    this.guide('Box selection', 'Press and drag a virtual rectangle across the features to select.', 'Arrow', () => this.beginFeatureSelection());
+  },
+  clearSelection() {
+    this.state.selectedRecord = null; this.state.selectedRecords = [];
+    this.renderAllLayers(); this.updateEditToolbar();
+  },
+  modifySelectedFeature() {
+    const r = this.state.selectedRecord; if (!r) { this.beginFeatureSelection(); return; }
+    const l = this.state.layers.find((x) => x.id === r.layerId);
+    this.setActiveTool('vertices');
+    this.startEditGeom(r, l);
+  },
+  geometryBounds(record) {
+    const g = Exporter.geometryOf(record); if (!g) return null;
+    const points = [];
+    const walk = (value) => {
+      if (!Array.isArray(value)) return;
+      if (typeof value[0] === 'number') points.push([value[1], value[0]]);
+      else value.forEach(walk);
+    };
+    walk(g.coordinates);
+    return points.length ? L.latLngBounds(points) : null;
+  },
+  geometryIntersectsBounds(record, bounds) {
+    const g = Exporter.geometryOf(record); if (!g) return false;
+    const west = bounds.getWest(), east = bounds.getEast(), south = bounds.getSouth(), north = bounds.getNorth();
+    const inside = (p) => p[0] >= west && p[0] <= east && p[1] >= south && p[1] <= north;
+    if (g.type === 'Point') return inside(g.coordinates);
+    const ring = g.type === 'Polygon' ? g.coordinates[0] : g.coordinates;
+    if (ring.some(inside)) return true;
+    const orient = (a, b, c) => Math.sign((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]));
+    const hit = (a, b, c, d) => orient(a, b, c) !== orient(a, b, d) && orient(c, d, a) !== orient(c, d, b);
+    const edges = [[[west, south], [east, south]], [[east, south], [east, north]], [[east, north], [west, north]], [[west, north], [west, south]]];
+    for (let i = 0; i < ring.length - 1; i++) if (edges.some((e) => hit(ring[i], ring[i + 1], e[0], e[1]))) return true;
+    if (g.type === 'Polygon') {
+      const pointInPolygon = (p) => {
+        let c = false;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          const a = ring[i], b = ring[j];
+          if (((a[1] > p[1]) !== (b[1] > p[1])) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]) c = !c;
+        }
+        return c;
+      };
+      if ([[west, south], [east, south], [east, north], [west, north]].some(pointInPolygon)) return true;
+    }
+    return false;
+  },
+  onBoxSelectStart(e) {
+    if (this.state.activeTool !== 'box' || this.state.draw || this.state.editGeom) return;
+    if (e.originalEvent && e.originalEvent.button != null && e.originalEvent.button !== 0) return;
+    this._boxStart = e.latlng;
+    if (this._boxLayer) this.state.map.removeLayer(this._boxLayer);
+    this._boxLayer = L.rectangle(L.latLngBounds(e.latlng, e.latlng), { className: 'selection-rectangle', color: '#007AC2', weight: 2, fillColor: '#4CAEE5', fillOpacity: 0.16, dashArray: '7 5', interactive: false }).addTo(this.state.map);
+  },
+  onBoxSelectMove(e) {
+    if (!this._boxStart || !this._boxLayer) return;
+    this._boxLayer.setBounds(L.latLngBounds(this._boxStart, e.latlng));
+  },
+  onBoxSelectEnd(e) {
+    if (!this._boxStart) return;
+    const bounds = L.latLngBounds(this._boxStart, e.latlng);
+    this._boxStart = null;
+    this._boxJustFinished = true; setTimeout(() => { this._boxJustFinished = false; }, 50);
+    if (this._boxLayer) { this.state.map.removeLayer(this._boxLayer); this._boxLayer = null; }
+    const selected = this.state.records.filter((r) => {
+      if (!this.state.project || r.projectId !== this.state.project.id) return false;
+      const layer = this.state.layers.find((l) => l.id === r.layerId);
+      if (layer && layer.hidden) return false;
+      return this.geometryIntersectsBounds(r, bounds);
+    });
+    this.state.selectedRecords = selected;
+    this.state.selectedRecord = selected[0] || null;
+    this.renderAllLayers(); this.updateEditToolbar();
+    this.toast(selected.length ? `${selected.length} feature${selected.length === 1 ? '' : 's'} selected` : 'No features inside the box', selected.length ? 'ok' : '');
+  },
+  moveSelectedFeature() {
+    const r = this.state.selectedRecord; if (!r || (this.state.selectedRecords || []).length !== 1) return;
+    const l = this.state.layers.find((x) => x.id === r.layerId);
+    const g = Exporter.geometryOf(r); if (!g) return;
+    if (g.type === 'Point') { this.setActiveTool('move'); this.startEditGeom(r, l); return; }
+    this.closeSheet(); this.hideCollectBar(); this.setActiveTool('move');
+    const bounds = this.geometryBounds(r), center = bounds.getCenter();
+    const eg = this.state.editGeom = { record: r, layer: l, mode: r.geomType, moveMode: true, originalGeometry: JSON.parse(JSON.stringify(g)), _reLayer: L.layerGroup().addTo(this.state.map) };
+    this.updateEditToolbar();
+    eg._moveOrigin = center;
+    eg._moveMarker = L.marker(center, { draggable: true, zIndexOffset: 950, icon: L.divIcon({ className: 'geometry-move-handle', html: '<span></span>', iconSize: [34, 34], iconAnchor: [17, 17] }) }).addTo(this.state.map);
+    eg._moveMarker.on('drag', (ev) => {
+      const p = ev.target.getLatLng();
+      eg.previewGeometry = this.translateGeometry(eg.originalGeometry, p.lng - center.lng, p.lat - center.lat);
+      this.drawGeometryPreview(eg.previewGeometry, eg._reLayer);
+    });
+    eg._moveMarker.on('dragend', async (ev) => {
+      const p = ev.target.getLatLng();
+      this.captureSessionUndo();
+      r.geometry = this.translateGeometry(eg.originalGeometry, p.lng - center.lng, p.lat - center.lat);
+      const c = r.geometry.type === 'LineString' ? r.geometry.coordinates[0] : r.geometry.coordinates[0][0];
+      r.location = Object.assign(r.location || {}, { lng: c[0], lat: c[1] });
+      await this.finishEditGeom(r);
+    });
+    document.getElementById('tapHintText').textContent = 'Drag the blue diamond to move the entire geometry';
+    document.getElementById('tapHint').classList.add('show');
+  },
+  translateGeometry(geometry, dx, dy) {
+    const copy = JSON.parse(JSON.stringify(geometry));
+    const walk = (value) => {
+      if (typeof value[0] === 'number') { value[0] += dx; value[1] += dy; return; }
+      value.forEach(walk);
+    };
+    walk(copy.coordinates); return copy;
+  },
+  drawGeometryPreview(geometry, target) {
+    target.clearLayers();
+    if (geometry.type === 'LineString') L.polyline(geometry.coordinates.map((c) => [c[1], c[0]]), { color: '#007AC2', weight: 5, dashArray: '8 5' }).addTo(target);
+    else L.polygon(geometry.coordinates[0].map((c) => [c[1], c[0]]), { color: '#007AC2', weight: 3, fillColor: '#4CAEE5', fillOpacity: .22, dashArray: '8 5' }).addTo(target);
+  },
+  beginSplitSelectedLine() {
+    const r = this.state.selectedRecord;
+    if (!r || r.geomType !== 'line' || (this.state.selectedRecords || []).length !== 1) return;
+    this.setActiveTool('split'); this.closeSheet();
+    this.guide('Split line', 'Click anywhere along the selected line. The nearest position becomes the split point.', 'Cancel', () => this.beginFeatureSelection());
+  },
+  async splitSelectedLineAt(latlng) {
+    const r = this.state.selectedRecord, g = r && Exporter.geometryOf(r);
+    if (!r || !g || g.type !== 'LineString' || g.coordinates.length < 2) return;
+    const target = this.state.map.latLngToLayerPoint(latlng);
+    let best = null;
+    for (let i = 0; i < g.coordinates.length - 1; i++) {
+      const a = this.state.map.latLngToLayerPoint([g.coordinates[i][1], g.coordinates[i][0]]);
+      const b = this.state.map.latLngToLayerPoint([g.coordinates[i + 1][1], g.coordinates[i + 1][0]]);
+      const vx = b.x - a.x, vy = b.y - a.y, len2 = vx * vx + vy * vy;
+      const t = len2 ? Math.max(0, Math.min(1, ((target.x - a.x) * vx + (target.y - a.y) * vy) / len2)) : 0;
+      const x = a.x + t * vx, y = a.y + t * vy, d2 = (target.x - x) ** 2 + (target.y - y) ** 2;
+      if (!best || d2 < best.d2) best = { i, t, d2, point: this.state.map.layerPointToLatLng([x, y]) };
+    }
+    if (!best || best.d2 > 900) { this.toast('Click closer to the selected line', 'err'); return; }
+    if ((best.i === 0 && best.t < .01) || (best.i === g.coordinates.length - 2 && best.t > .99)) { this.toast('Split point cannot be at a line endpoint', 'err'); return; }
+    const ca = g.coordinates[best.i], cb = g.coordinates[best.i + 1];
+    const z = ca.length > 2 && cb.length > 2 ? ca[2] + (cb[2] - ca[2]) * best.t : undefined;
+    const split = z == null ? [best.point.lng, best.point.lat] : [best.point.lng, best.point.lat, z];
+    const first = g.coordinates.slice(0, best.i + 1).concat([split]);
+    const secondCoords = [split].concat(g.coordinates.slice(best.i + 1));
+    const second = JSON.parse(JSON.stringify(r));
+    second.id = uid('rec'); second.geometry = { type: 'LineString', coordinates: secondCoords }; second.media = []; second.createdAt = nowISO(); second.updatedAt = nowISO();
+    second.location = Object.assign({}, second.location || {}, { lng: secondCoords[0][0], lat: secondCoords[0][1] });
+    this.captureSessionUndo();
+    r.geometry = { type: 'LineString', coordinates: first }; r.updatedAt = nowISO();
+    await DB.put('records', r); await DB.put('records', second);
+    this.state.records.push(second);
+    this.state.selectedRecord = null; this.state.selectedRecords = [];
+    this.setActiveTool('select'); this.renderAllLayers(); this.refreshBarSub();
+    this.toast('Line split into two editable features', 'ok');
+  },
+  openSelectedAttributes() {
+    const r = this.state.selectedRecord; if (!r) return;
+    this.rootNav(this.startCollect, [r]);
+  },
+  openRotateTool() {
+    const r = this.state.selectedRecord; if (!r) return;
+    const body = `<div class="note" style="margin-bottom:12px">Rotate the selected ${r.geomType} around its center.</div><div class="field"><label class="lbl">Rotation angle (degrees)</label><input class="inp" id="rotateAngle" type="number" min="-360" max="360" step="1" value="0" /></div>`;
+    this.openSheet('Rotate Feature', body, `<button class="btn btn-primary btn-block" id="applyRotate">Apply rotation</button>`);
+    document.getElementById('applyRotate').onclick = async () => {
+      const angle = +document.getElementById('rotateAngle').value;
+      if (!Number.isFinite(angle)) return;
+      this.captureSessionUndo();
+      const bounds = this.geometryBounds(r), center = bounds.getCenter();
+      r.geometry = this.rotateGeometry(Exporter.geometryOf(r), angle, center); r.updatedAt = nowISO();
+      await DB.put('records', r); this.renderAllLayers(); this.closeSheet(); this.toast(`Rotated ${angle}°`, 'ok');
+    };
+  },
+  rotateGeometry(geometry, degrees, center) {
+    const copy = JSON.parse(JSON.stringify(geometry)), rad = degrees * Math.PI / 180;
+    const cs = Math.cos(rad), sn = Math.sin(rad), scale = Math.cos(center.lat * Math.PI / 180) || 1;
+    const walk = (value) => {
+      if (typeof value[0] === 'number') {
+        const x = (value[0] - center.lng) * scale, y = value[1] - center.lat;
+        value[0] = center.lng + (x * cs - y * sn) / scale; value[1] = center.lat + x * sn + y * cs; return;
+      }
+      value.forEach(walk);
+    };
+    walk(copy.coordinates); return copy;
+  },
+  openSketchProperties() {
+    const dr = this.state.editGeom; if (!dr || !dr.vertexEdit) return;
+    const rows = dr.coords.map((c, i) => `<tr><td>${i + 1}</td><td><input class="inp sk-prop" data-i="${i}" data-axis="0" type="number" step="0.000001" value="${c[0]}" /></td><td><input class="inp sk-prop" data-i="${i}" data-axis="1" type="number" step="0.000001" value="${c[1]}" /></td><td><input class="inp sk-prop" data-i="${i}" data-axis="2" type="number" step="0.01" value="${c[2] == null ? '' : c[2]}" /></td></tr>`).join('');
+    this.openSheet('Edit Sketch Properties', `<div class="note" style="margin-bottom:10px">ArcMap-style vertex coordinate table. Edit X, Y, or Z directly.</div><div style="overflow:auto"><table class="attr sketch-props"><thead><tr><th>#</th><th>X / Longitude</th><th>Y / Latitude</th><th>Z</th></tr></thead><tbody>${rows}</tbody></table></div>`, `<button class="btn btn-primary btn-block" id="applySketchProps">Apply coordinates</button>`);
+    document.getElementById('applySketchProps').onclick = () => {
+      this.pushGeomUndo(dr);
+      document.querySelectorAll('.sk-prop').forEach((input) => { const i = +input.dataset.i, a = +input.dataset.axis, v = input.value === '' ? null : +input.value; if (a < 2 && Number.isFinite(v)) dr.coords[i][a] = v; else if (a === 2 && v != null && Number.isFinite(v)) dr.coords[i][2] = v; });
+      dr.activeVertex = null; this.redrawSketch(dr); this.updateSketchCount(); this.closeSheet(); this.toast('Sketch coordinates updated', 'ok');
+    };
+  },
+  beginReshapeFeature() { this.beginGeometryOperation('reshape'); },
+  beginCutPolygon() { this.beginGeometryOperation('cut'); },
+  beginGeometryOperation(operation) {
+    const r = this.state.selectedRecord; if (!r || !this.state.map) return;
+    this.closeSheet(); this.hideCollectBar(); this.state.map.doubleClickZoom.disable();
+    this.state.draw = { mode: 'line', operation, record: r, coords: [], layer: L.layerGroup().addTo(this.state.map) };
+    this.setActiveTool(operation); document.getElementById('sketchBar').classList.add('show');
+    document.getElementById('skHint').textContent = operation === 'cut' ? 'draw a line completely across the polygon' : 'draw the replacement path between two locations on the feature';
+    this.updateSketchCount();
+  },
+  closestPathLocation(coords, point) {
+    let best = null;
+    for (let i = 0; i < coords.length - 1; i++) {
+      const a = coords[i], b = coords[i + 1], vx = b[0] - a[0], vy = b[1] - a[1], len2 = vx * vx + vy * vy;
+      const t = len2 ? Math.max(0, Math.min(1, ((point[0] - a[0]) * vx + (point[1] - a[1]) * vy) / len2)) : 0;
+      const p = [a[0] + t * vx, a[1] + t * vy], d2 = (point[0] - p[0]) ** 2 + (point[1] - p[1]) ** 2;
+      if (!best || d2 < best.d2) best = { index: i, t, point: p, d2 };
+    }
+    return best;
+  },
+  polygonArea(ring) {
+    let area = 0; for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) area += ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1]; return area / 2;
+  },
+  ensureGeometryZ(geometry, z) {
+    if (z == null) return geometry;
+    const walk = (value) => { if (typeof value[0] === 'number') { if (value.length < 3) value.push(z); return; } value.forEach(walk); };
+    walk(geometry.coordinates); return geometry;
+  },
+  reshapeGeometry(record, sketch) {
+    const g = Exporter.geometryOf(record), base = g.type === 'Polygon' ? g.coordinates[0].slice(0, -1) : g.coordinates.slice();
+    const work = g.type === 'Polygon' ? base.concat([base[0]]) : base;
+    let a = this.closestPathLocation(work, sketch[0]), b = this.closestPathLocation(work, sketch[sketch.length - 1]);
+    if (!a || !b) return null;
+    if (g.type === 'LineString') {
+      if (a.index > b.index) { const t = a; a = b; b = t; sketch = sketch.slice().reverse(); }
+      return { type: 'LineString', coordinates: base.slice(0, a.index + 1).concat([a.point], sketch.slice(1, -1), [b.point], base.slice(b.index + 1)) };
+    }
+    const ring = base.slice(); const n = ring.length;
+    const forward = (from, to) => { const out = []; let i = (from + 1) % n; while (i !== (to + 1) % n) { out.push(ring[i]); i = (i + 1) % n; } return out; };
+    const c1 = [a.point].concat(forward(a.index, b.index), sketch.slice(0, -1).reverse(), [a.point]);
+    const c2 = [b.point].concat(forward(b.index, a.index), sketch.slice(0, -1), [b.point]);
+    const chosen = Math.abs(this.polygonArea(c1)) >= Math.abs(this.polygonArea(c2)) ? c1 : c2;
+    return chosen.length >= 4 ? { type: 'Polygon', coordinates: [chosen] } : null;
+  },
+  clipPolygonHalfPlane(points, a, b, keepPositive) {
+    const side = (p) => (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+    const inside = (p) => keepPositive ? side(p) >= 0 : side(p) <= 0;
+    const intersect = (s, e) => { const ds = side(s), de = side(e), t = ds / (ds - de); return [s[0] + t * (e[0] - s[0]), s[1] + t * (e[1] - s[1])]; };
+    const output = [];
+    for (let i = 0; i < points.length; i++) { const s = points[i], e = points[(i + 1) % points.length], si = inside(s), ei = inside(e); if (si && ei) output.push(e); else if (si && !ei) output.push(intersect(s, e)); else if (!si && ei) output.push(intersect(s, e), e); }
+    return output;
+  },
+  async finishGeometryOperation(dr) {
+    const r = dr.record, g = Exporter.geometryOf(r);
+    if (dr.operation === 'reshape') {
+      const reshaped = this.reshapeGeometry(r, dr.coords); if (!reshaped) { this.toast('Reshape path is invalid', 'err'); return; }
+      this.captureSessionUndo();
+      r.geometry = this.ensureGeometryZ(reshaped, r.location && r.location.z); r.updatedAt = nowISO(); await DB.put('records', r); this.endDraw(); this.renderAllLayers(); this.toast('Feature reshaped', 'ok'); return;
+    }
+    const ring = g.coordinates[0].slice(0, -1), a = dr.coords[0], b = dr.coords[dr.coords.length - 1];
+    const left = this.clipPolygonHalfPlane(ring, a, b, true), right = this.clipPolygonHalfPlane(ring, a, b, false);
+    if (left.length < 3 || right.length < 3) { this.toast('The cut line must cross the polygon completely', 'err'); return; }
+    this.captureSessionUndo(); left.push(left[0]); right.push(right[0]);
+    r.geometry = this.ensureGeometryZ({ type: 'Polygon', coordinates: [left] }, r.location && r.location.z); r.updatedAt = nowISO();
+    const second = JSON.parse(JSON.stringify(r)); second.id = uid('rec'); second.geometry = this.ensureGeometryZ({ type: 'Polygon', coordinates: [right] }, r.location && r.location.z); second.media = []; second.createdAt = nowISO();
+    await DB.put('records', r); await DB.put('records', second); this.state.records.push(second);
+    this.state.selectedRecord = null; this.state.selectedRecords = []; this.endDraw(); this.renderAllLayers(); this.refreshBarSub(); this.toast('Polygon cut into two features', 'ok');
+  },
+  async mergeSelectedFeatures() {
+    const selected = this.state.selectedRecords || []; if (selected.length < 2) return;
+    const target = selected[0], type = target.geomType;
+    if (type === 'point') { this.toast('Point features cannot form a single geometry in this data model', 'err'); return; }
+    let geometry;
+    if (type === 'line') {
+      let coords = Exporter.geometryOf(target).coordinates.slice();
+      for (const r of selected.slice(1)) {
+        let next = Exporter.geometryOf(r).coordinates.slice();
+        const pairs = [[coords[coords.length - 1], next[0], 0], [coords[coords.length - 1], next[next.length - 1], 1], [coords[0], next[next.length - 1], 2], [coords[0], next[0], 3]];
+        const d = (p) => this.state.map.distance([p[0][1], p[0][0]], [p[1][1], p[1][0]]); pairs.sort((x, y) => d(x) - d(y));
+        if (d(pairs[0]) > 5) { this.toast('Lines must share endpoints within 5 metres to merge', 'err'); return; }
+        const mode = pairs[0][2]; if (mode === 1 || mode === 3) next.reverse(); if (mode < 2) coords = coords.concat(next.slice(1)); else coords = next.slice(0, -1).concat(coords);
+      }
+      geometry = { type: 'LineString', coordinates: coords };
+    } else {
+      if (typeof turf === 'undefined' || !turf.union) { this.toast('Polygon merge engine is still loading', 'err'); return; }
+      let merged = turf.polygon(Exporter.geometryOf(target).coordinates);
+      try { for (const r of selected.slice(1)) merged = turf.union(merged, turf.polygon(Exporter.geometryOf(r).coordinates)); } catch { this.toast('Selected polygons could not be merged', 'err'); return; }
+      if (!merged || merged.geometry.type !== 'Polygon') { this.toast('Polygons must touch or overlap to create one feature', 'err'); return; }
+      geometry = merged.geometry;
+    }
+    this.captureSessionUndo(); target.geometry = geometry; target.updatedAt = nowISO(); await DB.put('records', target);
+    const remove = selected.slice(1); for (const r of remove) await DB.del('records', r.id);
+    const ids = new Set(remove.map((r) => r.id)); this.state.records = this.state.records.filter((r) => !ids.has(r.id));
+    this.state.selectedRecord = target; this.state.selectedRecords = [target]; this.renderAllLayers(); this.refreshBarSub(); this.updateEditToolbar(); this.toast(`${selected.length} features merged`, 'ok');
+  },
+  async deleteSelectedFeature() {
+    const selected = this.state.selectedRecords || []; if (!selected.length) return;
+    if (!confirm(`Delete ${selected.length} selected feature${selected.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    this.captureSessionUndo();
+    for (const r of selected) {
+      for (const m of (r.media || [])) if (!m.dataUrl) await Media.remove(m.id);
+      await DB.del('records', r.id);
+    }
+    const ids = new Set(selected.map((r) => r.id));
+    this.state.records = this.state.records.filter((x) => !ids.has(x.id));
+    this.state.selectedRecord = null;
+    this.state.selectedRecords = [];
+    this.renderAllLayers(); this.refreshBarSub(); this.updateEditToolbar();
+    this.toast(`${selected.length} feature${selected.length === 1 ? '' : 's'} deleted`, 'ok');
   },
 
   toggleBasemapPanel() { const p = document.getElementById('basemapPanel'); p.classList.toggle('show'); document.querySelectorAll('.bm-opt').forEach((b) => b.classList.toggle('on', b.dataset.bm === this.state.activeBasemap)); },
@@ -147,21 +661,43 @@ const App = {
   },
   startWatch() {
     this._watchStarted = true;
+    if (this.state.watchId != null) { try { navigator.geolocation.clearWatch(this.state.watchId); } catch {} }
     this.state.watchId = navigator.geolocation.watchPosition(
-      (pos) => this.onFix(pos),
-      () => { /* transient errors ignored — keep last known fix on screen */ },
+      (pos) => { this._gpsDenied = false; this.onFix(pos); },
+      (err) => {
+        // PERMISSION_DENIED is permanent until the user changes it — tell them once.
+        if (err && err.code === 1 && !this._gpsDenied) {
+          this._gpsDenied = true;
+          this.toast('Location is blocked — allow it in your browser settings to capture GPS', 'err');
+          return;
+        }
+        // POSITION_UNAVAILABLE / TIMEOUT are transient (cold start, tunnels, bad sky view).
+        // Keep the last fix on screen and quietly restart the watch so it never dies silently.
+        if (!err || err.code !== 1) {
+          clearTimeout(this._watchRestartT);
+          this._watchRestartT = setTimeout(() => { if (this._watchStarted && !this._gpsDenied) this.startWatch(); }, 5000);
+        }
+      },
       { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
     );
+    // Mobile browsers suspend geolocation in the background. When the surveyor returns to the
+    // app, restart the watch immediately so a fresh fix is ready before they tap "Use GPS" —
+    // this is what keeps capture instant offline, where a cold fix can take 30s+.
+    if (!this._visibilityWired) {
+      this._visibilityWired = true;
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && this._watchStarted && !this._gpsDenied) this.startWatch();
+      });
+    }
   },
   onFix(pos) {
-    const { latitude, longitude, accuracy, heading, speed } = pos.coords;
-    const fix = { lat: latitude, lng: longitude, accuracy, heading: (heading != null && !isNaN(heading)) ? heading : null, speed: (speed != null && !isNaN(speed)) ? speed : null };
+    const { latitude, longitude, altitude, accuracy, heading, speed } = pos.coords;
+    const fix = { lat: latitude, lng: longitude, z: (altitude != null && !isNaN(altitude)) ? altitude : null, accuracy, heading: (heading != null && !isNaN(heading)) ? heading : null, speed: (speed != null && !isNaN(speed)) ? speed : null, ts: Date.now() };
     this.state.lastFix = fix;
     this.showGPS(fix);
     this.pushTrail(fix);
     if (!this._hadFirstFix) { this._hadFirstFix = true; this.centerOnFix(true); } // one-time convenience center on first-ever fix
     else if (this.state.follow && this.state.map) this.centerOnFix(false);
-    document.getElementById('locateBtn').classList.remove('active');
   },
   centerOnFix(zoomIn) {
     const f = this.state.lastFix; if (!f || !this.state.map) return;
@@ -211,21 +747,70 @@ const App = {
   },
   gpsPuckHTML() { return `<div class="gps-puck-icon"><svg class="cone" viewBox="0 0 46 46"><path d="M23 2 L33 23 L23 18 L13 23 Z" fill="#0079C1" opacity="0.85"/></svg><div class="dot"></div></div>`; },
 
-  // Breadcrumb trail — shows the path walked during this session (visual aid, not a saved feature)
+  // Project field route: persisted continuously and exportable as a time-aware GeoJSON.
   pushTrail(fix) {
-    if (!this.state.map) return;
-    this.state.trail = this.state.trail || [];
-    const last = this.state.trail[this.state.trail.length - 1];
-    if (last && last[0] === fix.lat && last[1] === fix.lng) return;
-    this.state.trail.push([fix.lat, fix.lng]);
-    if (this.state.trail.length > 600) this.state.trail.shift();
-    if (!this._trailLine) this._trailLine = L.polyline(this.state.trail.map((c) => [c[0], c[1]]), { color: '#0079C1', weight: 3, opacity: 0.45, dashArray: '1,8', lineCap: 'round' }).addTo(this.state.gpsLayer);
-    else this._trailLine.setLatLngs(this.state.trail.map((c) => [c[0], c[1]]));
+    if (!this.state.map || !this.state.project || this.state.route.paused || !isFinite(fix.lat) || !isFinite(fix.lng)) return;
+    if (fix.accuracy != null && fix.accuracy > 100) return;
+    const points = this.state.route.points || (this.state.route.points = []);
+    const last = points[points.length - 1];
+    const point = { lat: fix.lat, lng: fix.lng, z: fix.z, accuracy: fix.accuracy, heading: fix.heading, speed: fix.speed, ts: fix.ts || Date.now() };
+    if (last) {
+      const d = this.routeDistance(last, point), dt = Math.max(0, point.ts - last.ts);
+      if (d < 2 && dt < 15000) return;
+      if (d > 300 && dt < 30000) return;
+      this.state.route.distanceM = (this.state.route.distanceM || 0) + d;
+    }
+    points.push(point);
+    if (points.length > 20000) points.shift();
+    this.renderRouteLine();
+    clearTimeout(this._routeSaveTimer);
+    this._routeSaveTimer = setTimeout(() => this.persistRoute(), 750);
   },
-  clearTrail() {
-    this.state.trail = [];
-    if (this._trailLine) { this.state.map.removeLayer(this._trailLine); this._trailLine = null; }
-    this.toast('Trail cleared');
+  routeDistance(a, b) {
+    const rad = Math.PI / 180, p1 = a.lat * rad, p2 = b.lat * rad;
+    const dp = (b.lat - a.lat) * rad, dl = (b.lng - a.lng) * rad;
+    const h = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+    return 6371008.8 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+  },
+  renderRouteLine() {
+    if (!this.state.map || !this.state.gpsLayer) return;
+    const latlngs = (this.state.route.points || []).map((p) => [p.lat, p.lng]);
+    if (!latlngs.length) {
+      if (this._trailLine) { this.state.gpsLayer.removeLayer(this._trailLine); this._trailLine = null; }
+      return;
+    }
+    if (!this._trailLine) this._trailLine = L.polyline(latlngs, { color: '#0079C1', weight: 4, opacity: 0.72, dashArray: '2,7', lineCap: 'round', interactive: false }).addTo(this.state.gpsLayer);
+    else this._trailLine.setLatLngs(latlngs);
+  },
+  async persistRoute() {
+    const p = this.state.project; if (!p) return;
+    await DB.put('settings', { key: `field_route_${p.id}`, projectId: p.id, points: this.state.route.points || [], distanceM: this.state.route.distanceM || 0, paused: !!this.state.route.paused, updatedAt: nowISO() });
+  },
+  async restoreRoute() {
+    const p = this.state.project; if (!p) return;
+    const row = await DB.get('settings', `field_route_${p.id}`);
+    this.state.route = row ? { points: row.points || [], distanceM: row.distanceM || 0, paused: !!row.paused } : { points: [], distanceM: 0, paused: false };
+    this.renderRouteLine();
+  },
+  routeStats() {
+    const pts = this.state.route.points || [], first = pts[0], last = pts[pts.length - 1];
+    const durationS = first && last ? Math.max(0, Math.round((last.ts - first.ts) / 1000)) : 0;
+    const speeds = pts.map((p) => p.speed).filter((v) => v != null && isFinite(v) && v >= 0);
+    return { pointCount: pts.length, distanceM: this.state.route.distanceM || 0, durationS, startTime: first ? new Date(first.ts).toISOString() : null, endTime: last ? new Date(last.ts).toISOString() : null, avgSpeedKmh: durationS ? ((this.state.route.distanceM || 0) / durationS) * 3.6 : 0, maxSpeedKmh: speeds.length ? Math.max(...speeds) * 3.6 : 0 };
+  },
+  routeGeoJSON() {
+    const pts = this.state.route.points || [], st = this.routeStats(), project = this.state.project;
+    const geometry = pts.length > 1 ? { type: 'LineString', coordinates: pts.map((p) => p.z == null ? [p.lng, p.lat] : [p.lng, p.lat, p.z]) } : (pts.length === 1 ? { type: 'Point', coordinates: pts[0].z == null ? [pts[0].lng, pts[0].lat] : [pts[0].lng, pts[0].lat, pts[0].z] } : null);
+    return { type: 'FeatureCollection', name: `${project ? project.name : 'Project'} Field Route`, features: geometry ? [{ type: 'Feature', geometry, properties: { route_name: `${project ? project.name : 'Project'} Field Route`, project_id: project ? project.id : '', project_name: project ? project.name : '', surveyor: this.state.user ? this.state.user.name : '', start_time: st.startTime, end_time: st.endTime, duration_seconds: st.durationS, distance_m: Math.round(st.distanceM * 100) / 100, distance_km: Math.round(st.distanceM) / 1000, average_speed_kmh: Math.round(st.avgSpeedKmh * 100) / 100, maximum_speed_kmh: Math.round(st.maxSpeedKmh * 100) / 100, point_count: st.pointCount, coordinate_times: pts.map((p) => new Date(p.ts).toISOString()), accuracy_m: pts.map((p) => p.accuracy == null ? null : Math.round(p.accuracy * 10) / 10), speed_mps: pts.map((p) => p.speed == null ? null : p.speed) } }] : [] };
+  },
+  routeDistanceText(m) { return m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`; },
+  routeDurationText(seconds) { const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = seconds % 60; return h ? `${h}h ${m}m` : (m ? `${m}m ${s}s` : `${s}s`); },
+  async clearTrail() {
+    const p = this.state.project;
+    this.state.route = { points: [], distanceM: 0, paused: false };
+    if (p) await DB.del('settings', `field_route_${p.id}`);
+    this.renderRouteLine();
+    this.toast('Field route cleared');
   },
 };
 
@@ -313,13 +898,21 @@ Object.assign(App, {
     return opts;
   },
 
-  setProject(p) {
+  async setProject(p) {
+    if (this.state.project && this.state.project.id !== p.id) await this.persistRoute();
     this.state.project = p;
     this.state.activeLayer = null;
+    this.state.selectedRecord = null;
+    this.state.selectedRecords = [];
+    this.state.editingSession = false;
+    this.state.route = { points: [], distanceM: 0, paused: false };
     localStorage.setItem('sm_project', p.id);
     document.getElementById('barProj').textContent = p.name;
     this.refreshBarSub();
+    this.updateEditToolbar();
     this.renderAllLayers();
+    await this.restoreRoute();
+    this.startEditing(true);
     this.restoreImagery();
     this.closeSheet();
     // if no layers yet, prompt to create one
@@ -339,13 +932,13 @@ Object.assign(App, {
     if (!this.state.project) { this.toast('Select a project first', 'err'); this.rootNav(this.openProjectPicker); return; }
     const layers = this.state.layers.filter((l) => l.projectId === this.state.project.id);
     const body = layers.length === 0
-      ? `<div class="empty">${icon('stack', 44)}<h3>No layers yet</h3><p>A layer is a feature class — like "INLET" or "PIPE". Create one, define its attributes, then all captures of that type collect into it.</p></div>`
+      ? `<div class="empty">${icon('stack', 44)}<h3>No asset types yet</h3><p>Create an asset type, choose its point, line or polygon geometry, and define the attributes to collect.</p></div>`
       : layers.map((l) => {
           const n = this.state.records.filter((r) => r.layerId === l.id).length;
           const sw = this.symbSwatch(l);
           return `<div class="layer-row"><div class="layer-main" data-open="${l.id}"><div class="swatch">${sw}</div><div class="tx"><div class="t">${esc(l.name)}</div><div class="d">${l.geomType} · ${l.fields.length} field${l.fields.length !== 1 ? 's' : ''} · ${n} record${n !== 1 ? 's' : ''}</div></div></div><div class="layer-acts"><button class="mini" data-vis="${l.id}" title="Toggle visibility">${icon(l.hidden ? 'xCircle' : 'checkCircle', 17)}</button><button class="mini" data-symb="${l.id}" title="Symbology">${icon('palette', 17)}</button><button class="mini" data-editl="${l.id}" title="Edit layer">${icon('settings', 17)}</button></div></div>`;
         }).join('');
-    this.openSheet(`Layers · ${this.state.project.name}`, body, `<button class="btn btn-primary btn-block btn-lg" id="newLayerBtn">${icon('plus', 17)} New layer / feature class</button>`);
+    this.openSheet(`Asset Types · ${this.state.project.name}`, body, `<button class="btn btn-primary btn-block btn-lg" id="newLayerBtn">${icon('plus', 17)} New Asset Type</button>`);
     document.getElementById('newLayerBtn').onclick = () => this.navTo(this.layerEditor, [null]);
     document.querySelectorAll('[data-open]').forEach((el) => el.onclick = () => { this.state.activeLayer = this.state.layers.find((l) => l.id === el.dataset.open); this.navTo(this.openRecords); });
     document.querySelectorAll('[data-symb]').forEach((el) => el.onclick = () => this.navTo(this.symbologyEditor, [el.dataset.symb]));
@@ -372,7 +965,7 @@ Object.assign(App, {
     this._layerDraft = l;
     const geomLocked = !!existing && this.state.records.some((r) => r.layerId === l.id);
     const body = `
-      <div class="field"><label class="lbl">Layer / feature class name <span class="req">*</span></label><input class="inp" id="lName" value="${esc(l.name)}" placeholder="e.g. INLET, PIPE, MANHOLE" /></div>
+      <div class="field"><label class="lbl">Type Asset Name <span class="req">*</span></label><input class="inp" id="lName" value="${esc(l.name)}" placeholder="Enter asset type name" /></div>
       <div class="field"><label class="lbl">Geometry type <span class="req">*</span></label>
         <div class="geo-types" id="lGeom">${['point', 'line', 'polygon'].map((g) => `<div class="geo-type ${g} ${l.geomType === g ? 'on' : ''}" data-g="${g}" ${geomLocked ? 'style="opacity:.5;pointer-events:none"' : ''}>${icon(g, 26)}<div class="n">${g[0].toUpperCase() + g.slice(1)}</div></div>`).join('')}</div>
         ${geomLocked ? '<div class="muted" style="margin-top:6px">Geometry type is locked because this layer already has records.</div>' : ''}
@@ -381,7 +974,7 @@ Object.assign(App, {
         <div class="note" style="margin-bottom:10px">Every layer automatically includes <b>Z_Elevation</b> (auto-filled) plus record ID, surveyor, role and timestamps. Add your own fields below.</div>
         <div id="fieldList"></div>
       </div>`;
-    this.openSheet(existing ? 'Edit layer' : 'New layer', body, `<button class="btn btn-ghost flex" id="lBack">Back</button>${existing ? `<button class="btn btn-danger" id="lDel">${icon('trash', 16)}</button>` : ''}<button class="btn btn-primary flex" id="lSave">${icon('check', 16)} Save layer</button>`);
+    this.openSheet(existing ? 'Edit Asset Type' : 'New Asset Type', body, `<button class="btn btn-ghost flex" id="lBack">Back</button>${existing ? `<button class="btn btn-danger" id="lDel">${icon('trash', 16)}</button>` : ''}<button class="btn btn-primary flex" id="lSave">${icon('check', 16)} Save Asset Type</button>`);
     if (!geomLocked) document.querySelectorAll('#lGeom [data-g]').forEach((el) => el.onclick = () => { const keep = l.symbology && l.symbology.color; l.geomType = el.dataset.g; if (!existing) l.symbology = this.defaultSymb(l.geomType, keep); document.querySelectorAll('#lGeom [data-g]').forEach((x) => x.classList.toggle('on', x === el)); });
     const renderFields = () => {
       const host = document.getElementById('fieldList');
@@ -413,14 +1006,14 @@ Object.assign(App, {
     };
     document.getElementById('lSave').onclick = async () => {
       l.name = document.getElementById('lName').value.trim();
-      if (!l.name) { this.toast('Enter a layer name', 'err'); return; }
+      if (!l.name) { this.toast('Enter the asset type name', 'err'); return; }
       // assign ids/labels
       l.fields = l.fields.filter((f) => f.label.trim()).map((f) => ({ ...f, id: f.id || uid('f'), key: f.label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') }));
       await DB.put('layers', l);
       const i = this.state.layers.findIndex((x) => x.id === l.id);
       if (i >= 0) this.state.layers[i] = l; else this.state.layers.push(l);
       this.renderAllLayers(); this.refreshBarSub();
-      this.toast('Layer saved', 'ok'); this.rootNav(this.afterLayerSaved, [l]);
+      this.toast('Asset type saved', 'ok'); this.rootNav(this.afterLayerSaved, [l]);
     };
   },
 
@@ -485,10 +1078,64 @@ Object.assign(App, {
     const g = Exporter.geometryOf(r); if (!g) return;
     const s = Object.assign(this.defaultSymb(l.geomType), l.symbology || {});
     let layer;
-    if (g.type === 'Point') layer = L.circleMarker([g.coordinates[1], g.coordinates[0]], { radius: s.size || 7, color: '#fff', weight: 2, opacity: s.opacity ?? 1, fillColor: s.color, fillOpacity: s.opacity ?? 1 });
-    else if (g.type === 'LineString') layer = L.polyline(g.coordinates.map((c) => [c[1], c[0]]), { color: s.color, weight: s.weight || 4, opacity: s.opacity ?? 1 });
-    else if (g.type === 'Polygon') layer = L.polygon(g.coordinates[0].map((c) => [c[1], c[0]]), { color: s.color, weight: s.weight || 2, opacity: s.opacity ?? 1, fillOpacity: s.fillOpacity ?? 0.25 });
-    if (layer) { layer.on('click', (e) => { if (L.DomEvent) L.DomEvent.stopPropagation(e); this.rootNav(this.openDetail, [r.id]); }); group.addLayer(layer); }
+    const selected = (this.state.selectedRecords || []).some((x) => x.id === r.id);
+    if (g.type === 'Point') layer = L.circleMarker([g.coordinates[1], g.coordinates[0]], { radius: selected ? (s.size || 7) + 4 : s.size || 7, color: selected ? '#FFD24A' : '#fff', weight: selected ? 4 : 2, opacity: s.opacity ?? 1, fillColor: s.color, fillOpacity: s.opacity ?? 1 });
+    else if (g.type === 'LineString') layer = L.polyline(g.coordinates.map((c) => [c[1], c[0]]), { color: selected ? '#FFD24A' : s.color, weight: selected ? (s.weight || 4) + 4 : s.weight || 4, opacity: s.opacity ?? 1 });
+    else if (g.type === 'Polygon') layer = L.polygon(g.coordinates[0].map((c) => [c[1], c[0]]), { color: selected ? '#FFD24A' : s.color, weight: selected ? 5 : s.weight || 2, opacity: s.opacity ?? 1, fillOpacity: selected ? 0.38 : s.fillOpacity ?? 0.25 });
+    if (layer) {
+      layer.bindTooltip(this.recTitle(r, l), { direction: 'top' });
+      this.wireMapFeature(layer, r, l);
+      if (g.type === 'LineString') {
+        const hit = L.polyline(g.coordinates.map((c) => [c[1], c[0]]), { color: '#000', weight: 24, opacity: 0.001, interactive: true });
+        this.wireMapFeature(hit, r, l); group.addLayer(hit);
+      }
+      group.addLayer(layer);
+    }
+  },
+  wireMapFeature(layer, record, featureLayer) {
+    layer.on('mouseover', () => {
+      clearTimeout(this._geometryHoverTimer);
+      const mapEl = document.getElementById('map'); if (mapEl) mapEl.classList.add('geometry-hover');
+    });
+    layer.on('mouseout', () => {
+      clearTimeout(this._geometryHoverTimer);
+      this._geometryHoverTimer = setTimeout(() => { const mapEl = document.getElementById('map'); if (mapEl) mapEl.classList.remove('geometry-hover'); }, 20);
+    });
+    layer.on('click', (e) => {
+      if (L.DomEvent) L.DomEvent.stopPropagation(e);
+      if (this.state.activeTool === 'box' || this.state.activeTool === 'pan') return;
+      if (this.state.placing || this.state.draw) { this.onMapClick(e); return; }
+      if (this.state.editGeom) return;
+      if (this.state.splittingLine && this.state.selectedRecord && this.state.selectedRecord.id === record.id) { this.splitSelectedLineAt(e.latlng); return; }
+      const now = Date.now();
+      const previous = this._lastFeatureTap;
+      clearTimeout(this._featureClickTimer);
+      if (previous && previous.id === record.id && now - previous.time < 550) {
+        this._lastFeatureTap = null;
+        this.state.selectedRecord = record; this.state.selectedRecords = [record];
+        this.setActiveTool('vertices'); this.startEditGeom(record, featureLayer);
+        return;
+      }
+      this._lastFeatureTap = { id: record.id, time: now };
+      const additive = !!(e.originalEvent && (e.originalEvent.ctrlKey || e.originalEvent.shiftKey));
+      const pending = additive ? (this.state.selectedRecords || []).slice() : [];
+      if (!pending.some((r) => r.id === record.id)) pending.push(record);
+      this.state.selectedRecord = record; this.state.selectedRecords = pending;
+      this.updateEditToolbar();
+      this._featureClickTimer = setTimeout(() => {
+        this._lastFeatureTap = null;
+        this.renderAllLayers(); this.updateEditToolbar();
+        this.toast(`${record.layerName || 'Feature'} selected · double-click to edit`, 'ok');
+      }, 550);
+    });
+    layer.on('dblclick', (e) => {
+      if (L.DomEvent) { L.DomEvent.stopPropagation(e); L.DomEvent.preventDefault(e); }
+      if (this.state.placing || this.state.draw || this.state.editGeom || ['box', 'create'].includes(this.state.activeTool)) return;
+      clearTimeout(this._featureClickTimer);
+      this.state.selectedRecord = record; this.state.selectedRecords = [record];
+      this.setActiveTool('vertices');
+      this.startEditGeom(record, featureLayer);
+    });
   },
 
   /* ---------- Records ---------- */
@@ -509,13 +1156,32 @@ Object.assign(App, {
     const body = `
       <div class="tools-row"><div class="search">${icon('search', 16)}<input id="recSearch" placeholder="Search" value="${esc(this._search || '')}" /></div>${layerFilter ? `<button class="btn btn-ghost" id="allLayers">All layers</button>` : ''}</div>
       ${!layerFilter && layers.length ? `<div class="filters">${[{ id: null, name: 'All' }].concat(layers).map((l) => `<button class="filter ${(!this._layerChip && !l.id) || this._layerChip === l.id ? 'on' : ''}" data-lc="${l.id || ''}">${esc(l.name)}</button>`).join('')}</div>` : ''}
-      ${list.length === 0 ? `<div class="empty">${icon('list', 44)}<p>${this._search ? 'No records match.' : 'No records yet. Tap Collect to add.'}</p></div>` : list.map((r) => this.recRow(r)).join('')}`;
+      ${list.length === 0 ? `<div class="empty">${icon('list', 44)}<p>${this._search ? 'No records match.' : 'No records yet. Tap Collect to add.'}</p></div>` : this.groupedRecRows(list)}`;
     this.openSheet(`${title} · ${this.state.project.name}`, body);
     const srch = document.getElementById('recSearch');
     srch.oninput = (e) => { this._search = e.target.value; this.renderRecords(); setTimeout(() => { const n = document.getElementById('recSearch'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 0); };
     const al = document.getElementById('allLayers'); if (al) al.onclick = () => { this.state.activeLayer = null; this.renderRecords(); };
     document.querySelectorAll('[data-lc]').forEach((el) => el.onclick = () => { this._layerChip = el.dataset.lc || null; this.state.activeLayer = this._layerChip ? this.state.layers.find((l) => l.id === this._layerChip) : null; this.renderRecords(); });
     document.querySelectorAll('[data-rid]').forEach((el) => el.onclick = () => this.navTo(this.openDetail, [el.dataset.rid]));
+  },
+  /* One feature class = one group. Records are grouped under their layer with a count,
+     so it is visually explicit that they are features of a single layer, not separate
+     layers — mirroring an attribute table grouped by feature class. */
+  groupedRecRows(list) {
+    const groups = new Map();
+    list.forEach((r) => {
+      const l = this.state.layers.find((x) => x.id === r.layerId);
+      const key = l ? l.id : (r.layerName || '?');
+      if (!groups.has(key)) groups.set(key, { name: (l ? l.name : (r.layerName || 'Records')), geomType: (l ? l.geomType : r.geomType) || 'point', rows: [] });
+      groups.get(key).rows.push(r);
+    });
+    let html = '';
+    for (const g of groups.values()) {
+      html += `<div class="rec-group"><span class="rg-ico">${icon(g.geomType === 'line' ? 'line' : g.geomType === 'polygon' ? 'polygon' : 'point', 13)}</span>` +
+        `<span class="rg-name">${esc(g.name)}</span><span class="rg-count">${g.rows.length} record${g.rows.length === 1 ? '' : 's'} · 1 layer</span></div>`;
+      html += g.rows.map((r) => this.recRow(r)).join('');
+    }
+    return html;
   },
   recRow(r) {
     const l = this.state.layers.find((x) => x.id === r.layerId);
@@ -547,7 +1213,8 @@ Object.assign(App, {
         <tr><td class="k">Surveyor</td><td class="v">${esc(r.surveyor || '—')} ${r.role ? `<span class="muted">· ${esc(r.role)}</span>` : ''}</td></tr>
       </table>
       ${(r.media || []).length ? `<div class="card-lbl" style="margin-top:16px">Photos & video (${r.media.length})</div><div class="media-grid">${r.media.map((m, i) => this.mediaThumb(m, i)).join('')}</div>` : ''}`;
-    const foot = `${g ? `<button class="btn btn-ghost" id="dZoom">${icon('mapPin', 16)}</button><button class="btn btn-ghost" id="dGeom">${icon('move', 16)}</button>` : ''}<button class="btn btn-ghost flex" id="dEdit">${icon('pencil', 16)} Edit</button><button class="btn btn-danger" id="dDel">${icon('trash', 16)}</button>`;
+    const geomLbl = r.geomType === 'point' ? 'Move' : 'Vertices';
+    const foot = `${g ? `<button class="btn btn-ghost tb" id="dZoom">${icon('mapPin', 16)}<span>Zoom</span></button><button class="btn btn-ghost tb" id="dGeom" title="${r.geomType === 'point' ? 'Drag or tap the new position' : 'Drag square vertices · use diamonds to add or move segments · undo/redo'}">${icon('move', 16)}<span>${geomLbl}</span></button>` : ''}<button class="btn btn-ghost tb flex" id="dEdit">${icon('pencil', 16)}<span>Edit</span></button><button class="btn btn-danger tb" id="dDel">${icon('trash', 16)}<span>Delete</span></button>`;
     this.openSheet(l ? l.name : 'Record', body, foot);
     this.hydrateMedia(r.media);
     if (g) {
@@ -584,23 +1251,92 @@ Object.assign(App, {
     this.closeSheet();
     this.hideCollectBar();
     this.state.editGeom = { record: r, layer: l, mode: r.geomType, coords: [] };
+    this.updateEditToolbar();
     if (g.type === 'Point') {
       this.state.map.setView([g.coordinates[1], g.coordinates[0]], Math.max(this.state.map.getZoom(), 17));
-      document.getElementById('tapHintText').textContent = 'Tap the new position for this point';
+      document.getElementById('tapHintText').textContent = 'Drag the marker to the new position — or tap the map';
       document.getElementById('tapHint').classList.add('show');
       document.getElementById('map').classList.add('placing-cursor');
+      // draggable handle at the current position: precise moves without hunting for the spot
+      const eg = this.state.editGeom;
+      eg._moveMarker = L.marker([g.coordinates[1], g.coordinates[0]], {
+        draggable: true, zIndexOffset: 900,
+        icon: L.divIcon({ className: 'v-node', html: '', iconSize: [22, 22] }),
+      }).addTo(this.state.map);
+      eg._moveMarker.on('dragend', (ev) => {
+        const p = ev.target.getLatLng();
+        const snapped = this.snapCoordinate(p, r.id);
+        this.applyPointMove(snapped[1], snapped[0]);
+      });
     } else {
-      this.state.editGeom.coords = [];
-      this.state.editGeom._reLayer = L.layerGroup().addTo(this.state.map);
+      // Load the feature's existing vertices so it can be MODIFIED rather than redrawn.
+      const ring = g.type === 'Polygon' ? (g.coordinates[0] || []) : (g.coordinates || []);
+      const coords = ring.map((c) => [c[0], c[1]]);
+      // a polygon ring repeats its first point at the end — drop it while editing, re-add on save
+      if (g.type === 'Polygon' && coords.length > 1) {
+        const a = coords[0], b = coords[coords.length - 1];
+        if (a[0] === b[0] && a[1] === b[1]) coords.pop();
+      }
+      const eg = this.state.editGeom;
+      eg.coords = coords;
+      eg.vertexEdit = true;                 // enables drag / insert / delete handles
+      eg.activeVertex = null;
+      eg._undo = []; eg._redo = [];
+      eg._reLayer = L.layerGroup().addTo(this.state.map);
       this.state.map.doubleClickZoom.disable();
-      document.getElementById('sketchBar').classList.add('show');
+      const sb = document.getElementById('sketchBar');
+      sb.classList.add('show'); sb.classList.add('editing');
+      const hint = document.getElementById('skHint');
+      if (hint) hint.textContent = 'drag square vertex · click small diamond to insert · drag diamond to move edge';
+      this.redrawSketch(eg);
       this.updateSketchCount();
+      try { const b2 = L.latLngBounds(coords.map((c) => [c[1], c[0]])); if (b2.isValid()) this.state.map.fitBounds(b2.pad(0.25)); } catch (e) {}
     }
+  },
+  /* ---------- vertex-edit history (undo / redo) ---------- */
+  pushGeomUndo(dr) {
+    if (!dr) return;
+    dr._undo = dr._undo || []; dr._redo = [];
+    dr._undo.push(JSON.stringify(dr.coords));
+    if (dr._undo.length > 60) dr._undo.shift();
+    this.updateEditToolbar();
+  },
+  geomUndo() {
+    const dr = this.state.editGeom || this.state.draw;
+    if (!dr || !dr._undo || !dr._undo.length) { this.toast('Nothing to undo'); return; }
+    dr._redo = dr._redo || [];
+    dr._redo.push(JSON.stringify(dr.coords));
+    dr.coords = JSON.parse(dr._undo.pop());
+    dr.activeVertex = null;
+    this.redrawSketch(dr); this.updateSketchCount();
+    this.updateEditToolbar();
+  },
+  geomRedo() {
+    const dr = this.state.editGeom || this.state.draw;
+    if (!dr || !dr._redo || !dr._redo.length) { this.toast('Nothing to redo'); return; }
+    dr._undo = dr._undo || [];
+    dr._undo.push(JSON.stringify(dr.coords));
+    dr.coords = JSON.parse(dr._redo.pop());
+    dr.activeVertex = null;
+    this.redrawSketch(dr); this.updateSketchCount();
+    this.updateEditToolbar();
+  },
+  /* Commit a point move — used by both drag (marker) and tap (map). */
+  applyPointMove(lat, lng) {
+    const eg = this.state.editGeom; if (!eg || !eg.record) return;
+    const r = eg.record;
+    this.captureSessionUndo();
+    r.geometry = { type: 'Point', coordinates: [lng, lat, (r.location && r.location.z != null) ? r.location.z : 0] };
+    r.location = Object.assign(r.location || {}, { lat, lng });
+    this.dropPin({ lat, lng }, '#0079C1');
+    this.finishEditGeom(r);
+    this.autoZ(r);
   },
   confirmEditGeom() {
     const eg = this.state.editGeom, r = eg.record;
     const min = eg.mode === 'line' ? 2 : 3;
     if (eg.coords.length < min) { this.toast(`Add at least ${min} points`, 'err'); return; }
+    this.captureSessionUndo();
     r.geometry = eg.mode === 'line' ? { type: 'LineString', coordinates: [...eg.coords] } : { type: 'Polygon', coordinates: [[...eg.coords, eg.coords[0]]] };
     this.finishEditGeom(r);
   },
@@ -608,17 +1344,22 @@ Object.assign(App, {
     r.updatedAt = nowISO();
     await DB.put('records', r);
     const i = this.state.records.findIndex((x) => x.id === r.id); if (i >= 0) this.state.records[i] = r;
+    this.state.selectedRecord = r; this.state.selectedRecords = [r];
     this.cancelEditGeom(); this.renderAllLayers(); this.toast('Geometry updated', 'ok');
   },
   cancelEditGeom() {
     const eg = this.state.editGeom;
     if (eg && eg._reLayer) this.state.map.removeLayer(eg._reLayer);
+    if (eg && eg._moveMarker) { try { this.state.map.removeLayer(eg._moveMarker); } catch (e) {} }
     this.state.editGeom = null;
     if (this.state.map) this.state.map.doubleClickZoom.enable();
     document.getElementById('tapHint').classList.remove('show');
     document.getElementById('map').classList.remove('placing-cursor');
     document.getElementById('sketchBar').classList.remove('show');
+    document.getElementById('sketchBar').classList.remove('editing');
+    { const h = document.getElementById('skHint'); if (h) h.textContent = 'tap map to add · double-tap to finish'; }
     this.showCollectBar();
+    this.setActiveTool('select');
   },
 });
 
@@ -715,17 +1456,52 @@ Object.assign(App, {
     const dm = document.getElementById('drawMap'); if (dm) dm.onclick = () => this.beginDraw(l.geomType);
     this.wireMedia();
     document.getElementById('fDraft').onclick = () => this.saveRecord('draft');
-    const fd = document.getElementById('fDone'); if (fd) fd.onclick = () => { const m = l.fields.filter((f) => f.required && !d.data[f.key]); if (m.length) { this.toast('Fill required: ' + m.map((f) => f.label).join(', '), 'err'); return; } this.saveRecord('completed'); };
+    const fd = document.getElementById('fDone'); if (fd) fd.onclick = () => {
+      // geometry is mandatory for a completed record — a feature class record without a shape is not GIS data
+      if (!d.geometry) { this.toast(`Capture the ${l.geomType} on the map first — geometry is required`, 'err'); return; }
+      const m = l.fields.filter((f) => f.required && !d.data[f.key]);
+      if (m.length) { this.toast('Fill required: ' + m.map((f) => f.label).join(', '), 'err'); return; }
+      this.saveRecord('completed');
+    };
   },
 
   /* ---------- Geometry capture ---------- */
+  /* Register a captured position on the draft. Works fully OFFLINE — the device GPS needs
+     no network; only the optional elevation lookup does (and it already defers politely). */
+  _registerFix(lat, lng, accuracy, note) {
+    const d = this.state.draft;
+    d.location = { lat, lng, accuracy, capturedAt: nowISO() };
+    d.geometry = { type: 'Point', coordinates: [lng, lat] };
+    this.openForm(); this.autoZ(d);
+    if (note) this.toast(note, 'ok');
+  },
   captureGPS() {
     if (!navigator.geolocation) { this.toast('GPS not available', 'err'); return; }
+    // Make sure the continuous tracker is running so this and every future capture is instant.
+    if (!this._watchStarted) this.startWatch();
+    // 1) The map tracker usually already has a live fix — use it instantly (crucial offline,
+    //    where a brand-new cold fix can take 30s+ without network assistance).
+    const lf = this.state.lastFix;
+    if (lf && lf.ts && (Date.now() - lf.ts) < 20000) {
+      this._registerFix(lf.lat, lf.lng, lf.accuracy, `GPS registered (±${Math.round(lf.accuracy)} m)`);
+      return;
+    }
     this.toast('Getting GPS fix…');
     navigator.geolocation.getCurrentPosition(
-      (pos) => { const d = this.state.draft; d.location = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy, capturedAt: nowISO() }; d.geometry = { type: 'Point', coordinates: [pos.coords.longitude, pos.coords.latitude] }; this.openForm(); this.autoZ(d); },
-      () => this.toast('GPS unavailable — try Tap map', 'err'),
-      { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+      (pos) => this._registerFix(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy),
+      () => {
+        // 2) Request failed (slow cold fix / flaky provider). Fall back to the most recent
+        //    tracker fix rather than losing the coordinate in the field.
+        const f = this.state.lastFix;
+        if (f) {
+          const age = f.ts ? Math.round((Date.now() - f.ts) / 1000) : null;
+          this._registerFix(f.lat, f.lng, f.accuracy, `Used last GPS fix${age != null ? ` (${age}s old)` : ''} — ±${Math.round(f.accuracy)} m`);
+        } else {
+          this.toast('No GPS fix yet — keep the sky visible and retry, or use Tap map', 'err');
+        }
+      },
+      // allow a recent cached fix (30 s) and give a cold start a realistic window
+      { enableHighAccuracy: true, timeout: 25000, maximumAge: 30000 }
     );
   },
 
@@ -754,6 +1530,7 @@ Object.assign(App, {
     this.closeSheet();
     this.hideCollectBar();
     this.state.placing = { mode: 'point' };
+    this.setActiveTool('create');
     document.getElementById('tapHintText').textContent = 'Tap the map to place the point';
     document.getElementById('tapHint').classList.add('show');
     document.getElementById('map').classList.add('placing-cursor');
@@ -763,6 +1540,7 @@ Object.assign(App, {
     this.state.placing = null;
     document.getElementById('tapHint').classList.remove('show');
     document.getElementById('map').classList.remove('placing-cursor');
+    this.setActiveTool('select');
     this.showCollectBar();
   },
   backToForm() { if (this.state.draft) this.openForm(); },
@@ -789,6 +1567,7 @@ Object.assign(App, {
     this.closeSheet();
     this.hideCollectBar();
     this.state.map.doubleClickZoom.disable();
+    this.setActiveTool('create');
     this.state.draw = { mode, coords: [], layer: L.layerGroup().addTo(this.state.map) };
     document.getElementById('sketchBar').classList.add('show');
     this.updateSketchCount();
@@ -799,6 +1578,17 @@ Object.assign(App, {
     document.getElementById('sketchCount').textContent = `${n} point${n !== 1 ? 's' : ''}`;
     const min = (dr && dr.mode === 'line') ? 2 : 3;
     document.getElementById('skFinish').disabled = n < min;
+    const delVertex = document.getElementById('skDeleteVertex');
+    if (delVertex) delVertex.disabled = !(dr && dr.vertexEdit && dr.activeVertex != null);
+  },
+  deleteActiveVertex() {
+    const dr = this.state.editGeom;
+    if (!dr || !dr.vertexEdit || dr.activeVertex == null) return;
+    const min = dr.mode === 'line' ? 2 : 3;
+    if (dr.coords.length <= min) { this.toast(`A ${dr.mode} needs at least ${min} vertices`, 'err'); return; }
+    this.pushGeomUndo(dr);
+    dr.coords.splice(dr.activeVertex, 1); dr.activeVertex = null;
+    this.redrawSketch(dr); this.updateSketchCount(); this.toast('Vertex deleted', 'ok');
   },
   undoSketchPoint() {
     const dr = this.state.draw || this.state.editGeom;
@@ -810,19 +1600,99 @@ Object.assign(App, {
   redrawSketch(dr) {
     const lyr = dr.layer || dr._reLayer; lyr.clearLayers();
     const ll = dr.coords.map((c) => [c[1], c[0]]);
+    dr._shape = null;
+    if (dr.mode === 'line' && ll.length > 1) dr._shape = L.polyline(ll, { color: '#0079C1', weight: 4 }).addTo(lyr);
+    if (dr.mode === 'polygon' && ll.length > 2) dr._shape = L.polygon(ll, { color: '#0079C1', weight: 2, fillOpacity: 0.2 }).addTo(lyr);
+    if (dr.vertexEdit) {
+      // midpoint handles — tap to INSERT a vertex into that segment
+      const n = dr.coords.length;
+      const segs = dr.mode === 'polygon' ? (n > 2 ? n : n - 1) : n - 1;
+      for (let i = 0; i < segs; i++) {
+        const a = dr.coords[i], b = dr.coords[(i + 1) % n];
+        if (!a || !b) continue;
+        const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        const edge = L.marker([mid[1], mid[0]], { icon: L.divIcon({ className: 'v-mid', html: '', iconSize: [16, 16] }), zIndexOffset: 400, keyboard: false, draggable: true }).addTo(lyr);
+        let edgeMoved = false, edgeStart = null, before = null;
+        edge.on('dragstart', () => {
+          this.pushGeomUndo(dr); edgeMoved = false; edgeStart = edge.getLatLng(); before = JSON.parse(JSON.stringify(dr.coords));
+        });
+        edge.on('drag', (ev) => {
+          const p = ev.target.getLatLng(), dx = p.lng - edgeStart.lng, dy = p.lat - edgeStart.lat;
+          if (Math.abs(dx) + Math.abs(dy) > 0.0000001) edgeMoved = true;
+          dr.coords[i] = [before[i][0] + dx, before[i][1] + dy];
+          const next = (i + 1) % n;
+          dr.coords[next] = [before[next][0] + dx, before[next][1] + dy];
+          if (dr._shape) dr._shape.setLatLngs(dr.coords.map((q) => [q[1], q[0]]));
+        });
+        edge.on('dragend', () => { if (edgeMoved) { this.redrawSketch(dr); this.updateSketchCount(); this.toast('Edge moved'); } });
+        edge.on('click', (ev) => {
+          if (L.DomEvent) L.DomEvent.stopPropagation(ev);
+          if (edgeMoved) { edgeMoved = false; return; }
+          this.pushGeomUndo(dr); dr.coords.splice(i + 1, 0, mid); dr.activeVertex = i + 1; this.redrawSketch(dr); this.updateSketchCount(); this.toast('Vertex inserted');
+        });
+      }
+      // vertex handles — drag to MODIFY, tap to DELETE
+      dr.coords.forEach((c, i) => {
+        const mk = L.marker([c[1], c[0]], { icon: L.divIcon({ className: `v-node${dr.activeVertex === i ? ' selected' : ''}`, html: '', iconSize: [20, 20] }), draggable: true, zIndexOffset: 500, keyboard: false }).addTo(lyr);
+        mk.on('dragstart', () => { dr.activeVertex = i; this.pushGeomUndo(dr); this.updateSketchCount(); });
+        mk.on('drag', (ev) => {
+          const p = ev.target.getLatLng(), snapped = this.snapCoordinate(p, dr.record && dr.record.id);
+          dr.coords[i] = snapped;
+          if (Math.abs(snapped[0] - p.lng) + Math.abs(snapped[1] - p.lat) > 1e-12) ev.target.setLatLng([snapped[1], snapped[0]]);
+          if (dr._shape) dr._shape.setLatLngs(dr.coords.map((q) => [q[1], q[0]]));
+        });
+        mk.on('dragend', (ev) => { const p = ev.target.getLatLng(), snapped = this.snapCoordinate(p, dr.record && dr.record.id); dr.coords[i] = snapped; this.redrawSketch(dr); this.updateSketchCount(); });
+        mk.on('click', (ev) => {
+          if (L.DomEvent) L.DomEvent.stopPropagation(ev);
+          dr.activeVertex = i; this.redrawSketch(dr); this.updateSketchCount();
+        });
+        mk.on('contextmenu', (ev) => {
+          if (L.DomEvent) { L.DomEvent.stopPropagation(ev); L.DomEvent.preventDefault(ev); }
+          dr.activeVertex = i; this.deleteActiveVertex();
+        });
+      });
+      return;
+    }
     dr.coords.forEach((c) => L.circleMarker([c[1], c[0]], { radius: 5, color: '#005E95', weight: 2, fillColor: '#0079C1', fillOpacity: 1 }).addTo(lyr));
-    if (dr.mode === 'line' && ll.length > 1) L.polyline(ll, { color: '#0079C1', weight: 4 }).addTo(lyr);
-    if (dr.mode === 'polygon' && ll.length > 2) L.polygon(ll, { color: '#0079C1', weight: 2, fillOpacity: 0.2 }).addTo(lyr);
+  },
+
+  snapCoordinate(latlng, excludeRecordId) {
+    if (!this.state.snapping || !this.state.map || !this.state.project) return [latlng.lng, latlng.lat];
+    const target = this.state.map.latLngToLayerPoint(latlng); let best = null;
+    const consider = (point, coordinate) => { const d = target.distanceTo(point); if (d <= 14 && (!best || d < best.distance)) best = { distance: d, coordinate }; };
+    for (const r of this.state.records) {
+      if (r.projectId !== this.state.project.id || r.id === excludeRecordId) continue;
+      const layer = this.state.layers.find((l) => l.id === r.layerId); if (layer && layer.hidden) continue;
+      const g = Exporter.geometryOf(r); if (!g) continue;
+      const coords = g.type === 'Point' ? [g.coordinates] : (g.type === 'Polygon' ? g.coordinates[0] : g.coordinates);
+      coords.forEach((c) => consider(this.state.map.latLngToLayerPoint([c[1], c[0]]), c.slice()));
+      for (let i = 0; i < coords.length - 1; i++) {
+        const a = this.state.map.latLngToLayerPoint([coords[i][1], coords[i][0]]), b = this.state.map.latLngToLayerPoint([coords[i + 1][1], coords[i + 1][0]]);
+        const vx = b.x - a.x, vy = b.y - a.y, len2 = vx * vx + vy * vy, t = len2 ? Math.max(0, Math.min(1, ((target.x - a.x) * vx + (target.y - a.y) * vy) / len2)) : 0;
+        const p = L.point(a.x + t * vx, a.y + t * vy), ll = this.state.map.layerPointToLatLng(p);
+        const z = coords[i].length > 2 && coords[i + 1].length > 2 ? coords[i][2] + t * (coords[i + 1][2] - coords[i][2]) : undefined;
+        consider(p, z == null ? [ll.lng, ll.lat] : [ll.lng, ll.lat, z]);
+      }
+    }
+    if (best) { this.showSnapIndicator(best.coordinate); return best.coordinate; }
+    return [latlng.lng, latlng.lat];
+  },
+  showSnapIndicator(coordinate) {
+    if (this._snapIndicator) this.state.map.removeLayer(this._snapIndicator);
+    this._snapIndicator = L.circleMarker([coordinate[1], coordinate[0]], { radius: 9, color: '#00FFFF', weight: 2, fillOpacity: 0, interactive: false }).addTo(this.state.map);
+    clearTimeout(this._snapTimer); this._snapTimer = setTimeout(() => { if (this._snapIndicator) { this.state.map.removeLayer(this._snapIndicator); this._snapIndicator = null; } }, 650);
   },
 
   onMapClick(e) {
+    if (this._boxJustFinished || this.state.activeTool === 'box' || this.state.activeTool === 'pan') return;
+    if (this.state.editGeom && this.state.editGeom.moveMode) return;
     // Point placement: tap = place immediately, no confirm step
     if (this.state.placing && this.state.placing.mode === 'point') {
-      const { lat, lng } = e.latlng;
+      const snapped = this.snapCoordinate(e.latlng), lng = snapped[0], lat = snapped[1];
       const d = this.state.draft;
       d.location = { lat, lng, accuracy: null, capturedAt: nowISO() };
       d.geometry = { type: 'Point', coordinates: [lng, lat] };
-      this.dropPin(e.latlng, '#0079C1');
+      this.dropPin({ lat, lng }, '#0079C1');
       this.endPlacing();
       this.toast('Point placed', 'ok');
       this.autoZ(d);
@@ -831,19 +1701,21 @@ Object.assign(App, {
     }
     // Geometry edit, point mode: tap = reposition immediately
     if (this.state.editGeom && this.state.editGeom.mode === 'point') {
-      const { lat, lng } = e.latlng;
-      const r = this.state.editGeom.record;
-      r.geometry = { type: 'Point', coordinates: [lng, lat, (r.location && r.location.z != null) ? r.location.z : 0] };
-      r.location = Object.assign(r.location || {}, { lat, lng });
-      this.dropPin(e.latlng, '#0079C1');
-      this.finishEditGeom(r);
-      this.autoZ(r);
+      const snapped = this.snapCoordinate(e.latlng, this.state.editGeom.record.id);
+      this.applyPointMove(snapped[1], snapped[0]);
       return;
     }
     // Line/polygon sketching (new draw or geometry edit)
     const dr = this.state.draw || (this.state.editGeom && this.state.editGeom.mode !== 'point' ? this.state.editGeom : null);
-    if (!dr) return;
-    dr.coords.push([e.latlng.lng, e.latlng.lat]);
+    if (!dr) {
+      if (this.state.activeTool === 'split') this.toast('Click directly on the selected line to split it', 'err');
+      else if (this.state.activeTool === 'select') {
+        this.state.selectedRecord = null; this.state.selectedRecords = []; this.renderAllLayers(); this.updateEditToolbar();
+      }
+      return;
+    }
+    if (dr.vertexEdit) this.pushGeomUndo(dr);
+    dr.coords.push(this.snapCoordinate(e.latlng, dr.record && dr.record.id));
     this.redrawSketch(dr);
     this.updateSketchCount();
   },
@@ -851,6 +1723,7 @@ Object.assign(App, {
     const dr = this.state.draw, d = this.state.draft;
     const min = dr.mode === 'line' ? 2 : 3;
     if (dr.coords.length < min) { this.toast(`Add at least ${min} points`, 'err'); return; }
+    if (dr.operation) { this.finishGeometryOperation(dr); return; }
     d.geometry = dr.mode === 'line' ? { type: 'LineString', coordinates: [...dr.coords] } : { type: 'Polygon', coordinates: [[...dr.coords, dr.coords[0]]] };
     d.location = { lat: dr.coords[0][1], lng: dr.coords[0][0], accuracy: null, capturedAt: nowISO() };
     this.endDraw(); this.toast('Shape captured', 'ok'); this.autoZ(d);
@@ -860,7 +1733,10 @@ Object.assign(App, {
     if (this.state.draw && this.state.draw.layer) this.state.map.removeLayer(this.state.draw.layer);
     this.state.draw = null;
     if (this.state.map) this.state.map.doubleClickZoom.enable();
+    this.setActiveTool('select');
     document.getElementById('sketchBar').classList.remove('show');
+    document.getElementById('sketchBar').classList.remove('editing');
+    { const h = document.getElementById('skHint'); if (h) h.textContent = 'tap map to add · double-tap to finish'; }
     this.showCollectBar();
   },
 
@@ -881,7 +1757,14 @@ Object.assign(App, {
       });
       // link to record location if we have it, else current GPS
       if (d.location && d.location.lat) doAdd(d.location.lat, d.location.lng);
-      else if (navigator.geolocation && type !== 'file') navigator.geolocation.getCurrentPosition((pos) => doAdd(pos.coords.latitude, pos.coords.longitude), () => doAdd(null, null), { enableHighAccuracy: true, timeout: 6000 });
+      else if (navigator.geolocation && type !== 'file') {
+        const lf2 = this.state.lastFix;
+        if (lf2 && lf2.ts && (Date.now() - lf2.ts) < 30000) doAdd(lf2.lat, lf2.lng);   // instant + offline-safe
+        else navigator.geolocation.getCurrentPosition(
+          (pos) => doAdd(pos.coords.latitude, pos.coords.longitude),
+          () => { const f2 = this.state.lastFix; f2 ? doAdd(f2.lat, f2.lng) : doAdd(null, null); },
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 });
+      }
       else doAdd(null, null);
     };
     this._addMediaFiles = add; // reused by the camera's "upload instead" fallback
@@ -1033,9 +1916,11 @@ Object.assign(App, {
 
   async saveRecord(status) {
     const d = this.state.draft, l = d._layer;
+    if (status === 'completed' && !d.geometry) { this.toast(`Geometry is required — capture the ${l.geomType} on the map`, 'err'); return; }
     // carry Z into point geometry coordinates for true 3D output
     if (d.geometry && d.geometry.type === 'Point' && d.location && d.location.z != null) d.geometry.coordinates[2] = d.location.z;
     const rec = { id: d.id || uid('rec'), projectId: this.state.project.id, layerId: l.id, layerName: l.name, geomType: l.geomType, data: d.data, geometry: d.geometry, location: d.location, media: (d.media || []), surveyor: d.surveyor, role: d.role, status, createdAt: d.createdAt || nowISO(), updatedAt: nowISO() };
+    this.captureSessionUndo();
     await DB.put('records', rec);
     const i = this.state.records.findIndex((r) => r.id === rec.id);
     if (i >= 0) this.state.records[i] = rec; else this.state.records.unshift(rec);
@@ -1058,15 +1943,37 @@ Object.assign(App, {
    Part 6 — Menu, Export, Import (load existing), boot
    ============================================================ */
 Object.assign(App, {
+  openRouteSummary() {
+    if (!this.state.project) { this.toast('Select a project first', 'err'); return; }
+    const st = this.routeStats(), paused = !!this.state.route.paused;
+    const body = `
+      <div class="card"><div class="card-lbl">Default Field Route</div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px">
+          <div><div class="muted">Distance</div><div style="font-size:21px;font-weight:750">${this.routeDistanceText(st.distanceM)}</div></div>
+          <div><div class="muted">Travel time</div><div style="font-size:21px;font-weight:750">${this.routeDurationText(st.durationS)}</div></div>
+          <div><div class="muted">Track points</div><div style="font-size:17px;font-weight:700">${st.pointCount}</div></div>
+          <div><div class="muted">Average speed</div><div style="font-size:17px;font-weight:700">${st.avgSpeedKmh.toFixed(1)} km/h</div></div>
+        </div>
+        <div class="note" style="margin-top:12px">GPS route points are saved automatically to this project and included in every complete export package.</div>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px"><button class="btn btn-ghost flex" id="routePause">${paused ? icon('play', 16) + ' Resume tracking' : icon('pause', 16) + ' Pause tracking'}</button><button class="btn btn-ghost flex" id="routeZoom">${icon('search', 16)} Zoom to route</button></div>
+      <button class="btn btn-primary btn-block" id="routeDownload">${icon('download', 16)} Download Route GeoJSON</button>
+      <button class="btn btn-danger btn-block" id="routeClear" style="margin-top:10px">${icon('trash', 16)} Clear Route</button>`;
+    this.openSheet(`Field Route · ${this.state.project.name}`, body);
+    document.getElementById('routePause').onclick = async () => { this.state.route.paused = !this.state.route.paused; await this.persistRoute(); this.openRouteSummary(); this.toast(`Route tracking ${this.state.route.paused ? 'paused' : 'resumed'}`, 'ok'); };
+    document.getElementById('routeZoom').onclick = () => { const pts = this.state.route.points || []; if (!pts.length) { this.toast('No route points yet', 'err'); return; } this.closeSheet(); this.state.map.fitBounds(L.latLngBounds(pts.map((p) => [p.lat, p.lng])).pad(0.18)); };
+    document.getElementById('routeDownload').onclick = () => { if (!st.pointCount) { this.toast('No route points yet', 'err'); return; } const safe = this.state.project.name.replace(/\s+/g, '_'); downloadBlob(`${safe}_Field_Route.geojson`, JSON.stringify(this.routeGeoJSON(), null, 2), 'application/geo+json'); this.toast('Route GeoJSON downloaded', 'ok'); };
+    document.getElementById('routeClear').onclick = async () => { if (!confirm('Clear the saved field route for this project?')) return; await this.clearTrail(); this.openRouteSummary(); };
+  },
   openMenu() {
     const u = this.state.user || { name: '—', role: '' };
     const body = `
       <div class="userbox"><div class="ic">${icon('user', 22)}</div><div><div class="t">${esc(u.name)}</div><div class="d">${esc(u.role)}</div></div><button class="btn-text" id="editUser" style="margin-left:auto">Edit</button></div>
       <div class="tpl" id="mProjects"><div class="ic">${icon('folder', 21)}</div><div class="tx"><div class="t">Projects</div><div class="d">${esc(this.state.project ? this.state.project.name : 'None')}</div></div><div class="chev">${icon('chevron', 18)}</div></div>
-      <div class="tpl" id="mLayers"><div class="ic">${icon('stack', 21)}</div><div class="tx"><div class="t">Layers / feature classes</div><div class="d">Create, symbolize, edit</div></div><div class="chev">${icon('chevron', 18)}</div></div>
+      <div class="tpl" id="mLayers"><div class="ic">${icon('stack', 21)}</div><div class="tx"><div class="t">Asset Types</div><div class="d">Create, symbolize and edit feature classes</div></div><div class="chev">${icon('chevron', 18)}</div></div>
       <div class="tpl" id="mImport"><div class="ic">${icon('upload', 21)}</div><div class="tx"><div class="t">Import existing data</div><div class="d">Load GeoJSON into a layer to edit</div></div><div class="chev">${icon('chevron', 18)}</div></div>
       <div class="tpl" id="mExport"><div class="ic">${icon('download', 21)}</div><div class="tx"><div class="t">Export & share</div><div class="d">GeoJSON, KML, Shapefile, CSV, ZIP</div></div><div class="chev">${icon('chevron', 18)}</div></div>
-      <div class="tpl" id="mClearTrail"><div class="ic">${icon('navigation', 21)}</div><div class="tx"><div class="t">Clear location trail</div><div class="d">${(this.state.trail || []).length} tracked points this session</div></div></div>
+      <div class="tpl" id="mRoute"><div class="ic">${icon('navigation', 21)}</div><div class="tx"><div class="t">Default Field Route</div><div class="d">${this.routeDistanceText(this.routeStats().distanceM)} · ${this.routeStats().pointCount} saved GPS points${this.state.route.paused ? ' · paused' : ''}</div></div><div class="chev">${icon('chevron', 18)}</div></div>
       ${this.state.project ? `<div class="card" style="margin-top:6px"><div class="card-lbl">${icon('globe', 12, 'display:inline;vertical-align:-2px')} Project coordinate system</div><div style="font-family:var(--mono);font-size:12.5px">${esc(this.state.project.crsName)} · ${esc(this.state.project.crsCode)}</div></div>` : ''}
       <button class="btn btn-danger btn-block" id="mWipe">${icon('trash', 16)} Erase all local data</button>
       <div class="muted" style="text-align:center;margin-top:14px">Smart Maidani · offline-first field GIS</div>`;
@@ -1076,10 +1983,10 @@ Object.assign(App, {
     document.getElementById('mLayers').onclick = () => this.navTo(this.openLayers);
     document.getElementById('mImport').onclick = () => this.navTo(this.openImport);
     document.getElementById('mExport').onclick = () => this.navTo(this.openExport);
-    document.getElementById('mClearTrail').onclick = () => { this.clearTrail(); this.goBack(); };
+    document.getElementById('mRoute').onclick = () => this.navTo(this.openRouteSummary);
     document.getElementById('mWipe').onclick = async () => {
       if (!confirm('Erase ALL data on this device (projects, layers, records, media, profile)? This cannot be undone.')) return;
-      await DB.clear('projects'); await DB.clear('layers'); await DB.clear('records'); await DB.clear('media'); await DB.clear('user');
+      await DB.clear('projects'); await DB.clear('layers'); await DB.clear('records'); await DB.clear('media'); await DB.clear('settings'); await DB.clear('user');
       localStorage.clear(); location.reload();
     };
   },
@@ -1101,11 +2008,12 @@ Object.assign(App, {
           <button class="ex-btn" data-ex="kml">${icon('mapPin', 22)} KML<span class="f">.kml</span></button>
           <button class="ex-btn" data-ex="shp">${icon('layers', 22)} Shapefile<span class="f">.zip</span></button>
           <button class="ex-btn" data-ex="csv">${icon('grid', 22)} CSV<span class="f">.csv</span></button>
-          <button class="ex-btn" data-ex="xlsx">${icon('grid', 22)} Excel<span class="f">.xlsx</span></button>
+          <button class="ex-btn" data-ex="xlsx">${icon('grid', 22)} Excel + Media<span class="f">.zip</span></button>
           <button class="ex-btn" data-ex="pdf">${icon('file', 22)} PDF<span class="f">.pdf</span></button>
         </div></div>
+      <div class="card"><div class="card-lbl">Default Field Route · ${this.routeStats().pointCount} GPS points</div><button class="btn btn-ghost btn-block" id="exRoute">${icon('navigation', 16)} Download Route GeoJSON · ${this.routeDistanceText(this.routeStats().distanceM)} · ${this.routeDurationText(this.routeStats().durationS)}</button></div>
       <div class="card"><div class="card-lbl">Complete package</div><button class="btn btn-primary btn-block" id="exZip">${icon('package', 16)} Build ZIP (data + media + report)</button>
-        <div class="muted" style="margin-top:8px">Includes GeoJSON, KML, CSV, Shapefile, geotagged media and a README. Geometry carries Z. Coordinates in ${esc(this.state.project.crsName)}.</div></div>
+        <div class="muted" style="margin-top:8px">Includes GeoJSON, KML, CSV, self-contained Shapefile media bundle, clickable Excel media bundle, field route and README. Geometry carries Z.</div></div>
       <div class="card"><div class="card-lbl">Share</div><div style="display:flex;gap:8px"><button class="btn btn-ghost flex" id="exShare">${icon('share', 16)} Device share</button><button class="btn btn-ghost flex" id="exMail">${icon('mail', 16)} Email</button></div></div>`;
     this.openSheet(`Export · ${this.state.project.name}`, body);
     document.getElementById('exLayerSel').onchange = (e) => { this._exLayer = e.target.value; this.openExport(); };
@@ -1118,15 +2026,27 @@ Object.assign(App, {
         if (ex === 'geojson') { const gj = reproj(Exporter.toGeoJSON(s)); downloadBlob(`${safe}.geojson`, JSON.stringify(gj, null, 2), 'application/geo+json'); this.toast('GeoJSON downloaded', 'ok'); }
         else if (ex === 'kml') { downloadBlob(`${safe}.kml`, Exporter.toKML(s, proj.name), 'application/vnd.google-earth.kml+xml'); this.toast('KML downloaded (WGS84)', 'ok'); }
         else if (ex === 'csv') { downloadBlob(`${safe}.csv`, Exporter.toCSV(s), 'text/csv'); this.toast('CSV downloaded', 'ok'); }
-        else if (ex === 'xlsx') { Exporter.downloadExcel(s, proj.name); this.toast('Excel downloaded', 'ok'); }
-        else if (ex === 'shp') { const bl = Exporter.toShapefileZip(s, proj.name); if (bl) { downloadBlob(`${safe}_shapefile.zip`, bl, 'application/zip'); this.toast('Shapefile downloaded', 'ok'); } else this.toast('No mappable geometry', 'err'); }
+        else if (ex === 'xlsx') { const result = await Exporter.downloadExcel(s, proj.name); this.toast(result.bundled ? 'Excel + media bundle downloaded' : 'Excel downloaded', 'ok'); }
+        else if (ex === 'shp') {
+          try {
+            const bl = await Exporter.toShapefileZip(s, proj.name);
+            downloadBlob(`${safe}_shapefile.zip`, bl, 'application/zip');
+            this.toast('Shapefile downloaded', 'ok');
+          } catch (err) { console.warn('shapefile export', err); this.toast(err.message || 'Shapefile export failed', 'err'); }
+        }
         else if (ex === 'pdf') { if (await Exporter.openPDFReport(s, proj)) this.toast('Choose Save as PDF', 'ok'); else this.toast('Allow popups for PDF', 'err'); }
       } catch (e) { this.toast('Export failed: ' + e.message, 'err'); }
     });
+    document.getElementById('exRoute').onclick = () => {
+      const route = this.routeGeoJSON();
+      if (!route.features.length) { this.toast('No route points yet', 'err'); return; }
+      downloadBlob(`${safe}_Field_Route.geojson`, JSON.stringify(route, null, 2), 'application/geo+json');
+      this.toast('Route GeoJSON downloaded', 'ok');
+    };
     document.getElementById('exZip').onclick = async () => {
-      const s = recsFor(); if (!s.length) { this.toast('No records', 'err'); return; }
+      const s = recsFor(), route = this.routeGeoJSON(); if (!s.length && !route.features.length) { this.toast('No records or route points', 'err'); return; }
       const btn = document.getElementById('exZip'); btn.innerHTML = `${icon('refresh', 16, 'display:inline-block')} Building…`;
-      try { const blob = await Exporter.buildZipPackage(s, proj); downloadBlob(`${safe}_package.zip`, blob, 'application/zip'); this.toast('ZIP downloaded', 'ok'); } catch (e) { this.toast('ZIP failed: ' + e.message, 'err'); }
+      try { const blob = await Exporter.buildZipPackage(s, proj, route.features.length ? route : null); downloadBlob(`${safe}_package.zip`, blob, 'application/zip'); this.toast('ZIP downloaded', 'ok'); } catch (e) { this.toast('ZIP failed: ' + e.message, 'err'); }
       btn.innerHTML = `${icon('package', 16)} Build ZIP (data + media + report)`;
     };
     document.getElementById('exShare').onclick = async () => { const s = recsFor(); if (!s.length) return; const gj = JSON.stringify(reproj(Exporter.toGeoJSON(s)), null, 2); const file = new File([gj], `${safe}.geojson`, { type: 'application/geo+json' }); if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: proj.name }); } catch {} } else if (navigator.share) { try { await navigator.share({ title: proj.name, text: `${s.length} records` }); } catch {} } else this.toast('Sharing not supported — use download', 'err'); };
@@ -1166,8 +2086,13 @@ Object.assign(App, {
     const eyeOff = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>';
     host.innerHTML = layers.map((l) => {
       const n = this.state.records.filter((r) => r.layerId === l.id).length;
-      return `<div class="lp-row"><div class="sw-mini">${this.symbSwatch(l)}</div><div class="nm">${esc(l.name)}</div><span class="cnt">${n}</span><button class="lp-eye ${l.hidden ? 'off' : ''}" data-lpv="${l.id}">${l.hidden ? eyeOff : eyeOn}</button></div>`;
+      return `<div class="lp-row"><div class="sw-mini lp-symb" data-lpsymb="${l.id}" title="Symbology — colour, size, transparency">${this.symbSwatch(l)}</div><div class="nm">${esc(l.name)}</div><span class="cnt">${n}</span><button class="lp-eye ${l.hidden ? 'off' : ''}" data-lpv="${l.id}">${l.hidden ? eyeOff : eyeOn}</button></div>`;
     }).join('');
+    host.querySelectorAll('[data-lpsymb]').forEach((el) => el.onclick = (e) => {
+      e.stopPropagation();
+      document.getElementById('layersPanel').classList.remove('show');
+      this.rootNav(this.symbologyEditor, [el.dataset.lpsymb]);
+    });
     host.querySelectorAll('[data-lpv]').forEach((el) => el.onclick = async () => {
       const l = this.state.layers.find((x) => x.id === el.dataset.lpv);
       l.hidden = !l.hidden;
@@ -1206,21 +2131,21 @@ Object.assign(App, {
     const body = `
       <div class="note" style="margin-bottom:14px"><b>${esc(this.state.project.name)}</b> is ready. How do you want to start?</div>
       <div class="tpl" id="wImport"><div class="ic">${icon('upload', 21)}</div><div class="tx"><div class="t">Import existing GIS data</div><div class="d">GeoJSON, Shapefile (.zip) or KML — layers & fields are created automatically</div></div><div class="chev">${icon('chevron', 18)}</div></div>
-      <div class="tpl" id="wScratch"><div class="ic">${icon('plus', 21)}</div><div class="tx"><div class="t">Start from scratch</div><div class="d">Create your first layer / feature class and define its fields</div></div><div class="chev">${icon('chevron', 18)}</div></div>`;
+      <div class="tpl" id="wScratch"><div class="ic">${icon('plus', 21)}</div><div class="tx"><div class="t">Start from scratch</div><div class="d">Create your first Asset Type and define its fields</div></div><div class="chev">${icon('chevron', 18)}</div></div>`;
     this.openSheet('Set up your project', body);
     document.getElementById('wImport').onclick = () => this.navTo(this.openImport);
     document.getElementById('wScratch').onclick = () => this.navTo(this.layerEditor, [null]);
   },
 
-  /* ---------- After a layer is saved: add another or start collecting ---------- */
+  /* ---------- After an Asset Type is saved: add another or start collecting ---------- */
   afterLayerSaved(layer) {
     const layers = this.state.layers.filter((l) => l.projectId === this.state.project.id);
     const body = `
-      <div class="note" style="margin-bottom:14px">Layer <b>${esc(layer.name)}</b> saved (${layer.geomType}, ${layer.fields.length} field${layer.fields.length !== 1 ? 's' : ''}). Project now has ${layers.length} layer${layers.length !== 1 ? 's' : ''}.</div>
-      <div class="tpl" id="wAnother"><div class="ic">${icon('plus', 21)}</div><div class="tx"><div class="t">Add another layer</div><div class="d">e.g. PIPE, MANHOLE, VALVE…</div></div><div class="chev">${icon('chevron', 18)}</div></div>
+      <div class="note" style="margin-bottom:14px">Asset Type <b>${esc(layer.name)}</b> saved (${layer.geomType}, ${layer.fields.length} field${layer.fields.length !== 1 ? 's' : ''}). Project now has ${layers.length} asset type${layers.length !== 1 ? 's' : ''}.</div>
+      <div class="tpl" id="wAnother"><div class="ic">${icon('plus', 21)}</div><div class="tx"><div class="t">Add another Asset Type</div><div class="d">Point, line or polygon with custom attributes</div></div><div class="chev">${icon('chevron', 18)}</div></div>
       <div class="tpl" id="wCollect"><div class="ic">${icon('point', 21)}</div><div class="tx"><div class="t">Start collecting</div><div class="d">Capture your first ${esc(layer.name)} record</div></div><div class="chev">${icon('chevron', 18)}</div></div>
-      <div class="tpl" id="wLayers"><div class="ic">${icon('stack', 21)}</div><div class="tx"><div class="t">Review layers</div><div class="d">Symbology, fields, visibility</div></div><div class="chev">${icon('chevron', 18)}</div></div>`;
-    this.openSheet('Layer saved', body);
+      <div class="tpl" id="wLayers"><div class="ic">${icon('stack', 21)}</div><div class="tx"><div class="t">Review Asset Types</div><div class="d">Symbology, fields, visibility</div></div><div class="chev">${icon('chevron', 18)}</div></div>`;
+    this.openSheet('Asset Type saved', body);
     document.getElementById('wAnother').onclick = () => this.navTo(this.layerEditor, [null]);
     document.getElementById('wCollect').onclick = () => { this.state.activeLayer = layer; this.rootNav(this.startCollect); };
     document.getElementById('wLayers').onclick = () => this.rootNav(this.openLayers);
@@ -1331,6 +2256,8 @@ Object.assign(App, {
       const buf = await f.arrayBuffer();
       const out = await shp(buf); // FeatureCollection or array of them (multi-layer zip)
       if (Array.isArray(out)) {
+        // A zip may hold several shapefiles. Tag each feature with its source .shp so the
+        // importer can keep one layer per shapefile instead of merging them together.
         const merged = { type: 'FeatureCollection', features: [] };
         out.forEach((fc) => { (fc.features || []).forEach((ft) => { ft.properties = ft.properties || {}; ft.properties.__source_layer = fc.fileName || ''; merged.features.push(ft); }); });
         return merged;
@@ -1366,35 +2293,47 @@ Object.assign(App, {
     }
     if (!exploded.length) throw new Error('no importable Point/Line/Polygon features found');
 
-    const byType = { Point: [], LineString: [], Polygon: [] };
-    exploded.forEach((f) => byType[f.geometry.type].push(f));
     const typeMap = { Point: 'point', LineString: 'line', Polygon: 'polygon' };
     const base = (sourceName || 'import').replace(/\.(geojson|json|kml|zip)$/i, '').replace(/[^\w\- ]+/g, '').trim() || 'IMPORT';
 
+    // Group by SOURCE first (each .shp inside a zip, or the file itself), then by geometry type.
+    // One shapefile therefore becomes ONE layer the surveyor works on as a single unit — a layer is
+    // only ever split when a single source genuinely mixes geometry types (a GIS layer can't do that).
+    const bySource = new Map();
+    exploded.forEach((f) => {
+      const src = ((f.properties && f.properties.__source_layer) || '').replace(/\.shp$/i, '').replace(/[^\w\- ]+/g, '').trim();
+      const key = src || base;
+      if (!bySource.has(key)) bySource.set(key, { Point: [], LineString: [], Polygon: [] });
+      bySource.get(key)[f.geometry.type].push(f);
+    });
+
     let totalImported = 0; const layersTouched = [];
-    for (const [gtype, list] of Object.entries(byType)) {
-      if (!list.length) continue;
-      let layer = null;
-      if (targetLayerId) {
-        const cand = this.state.layers.find((l) => l.id === targetLayerId);
-        if (cand && cand.geomType === typeMap[gtype]) layer = cand;
-        else if (cand) continue; // geometry mismatch with chosen layer — skip this type
-      }
-      if (!layer) {
-        // auto-create a layer with fields derived from properties
-        const fieldKeys = new Set();
-        list.slice(0, 200).forEach((f) => Object.keys(f.properties || {}).forEach((k) => fieldKeys.add(k)));
-        const fields = [...fieldKeys].filter((k) => k !== '__source_layer').slice(0, 30).map((k) => {
-          const sample = list.find((f) => f.properties && f.properties[k] != null);
-          const v = sample ? sample.properties[k] : '';
-          return { id: uid('f'), label: k, key: k.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''), type: (typeof v === 'number') ? 'number' : 'text', required: false };
-        });
-        const suffix = Object.values(byType).filter((x) => x.length).length > 1 ? '_' + typeMap[gtype].toUpperCase() : '';
-        layer = { id: uid('lyr'), projectId: this.state.project.id, name: (base + suffix).toUpperCase(), geomType: typeMap[gtype], fields, symbology: this.defaultSymb(typeMap[gtype], this.nextLayerColor()), createdAt: nowISO(), imported: true, sourceFile: sourceName };
-        await DB.put('layers', layer);
-        this.state.layers.push(layer);
-      }
-      layersTouched.push(layer.name);
+    for (const [srcName, byType] of bySource.entries()) {
+      const kindsInSource = Object.values(byType).filter((x) => x.length).length;
+      for (const [gtype, list] of Object.entries(byType)) {
+        if (!list.length) continue;
+        let layer = null;
+        if (targetLayerId) {
+          const cand = this.state.layers.find((l) => l.id === targetLayerId);
+          if (cand && cand.geomType === typeMap[gtype]) layer = cand;
+          else if (cand) continue; // geometry mismatch with chosen layer — skip this type
+        }
+        if (!layer) {
+          // auto-create a layer with fields derived from properties
+          const fieldKeys = new Set();
+          list.slice(0, 200).forEach((f) => Object.keys(f.properties || {}).forEach((k) => fieldKeys.add(k)));
+          const fields = [...fieldKeys].filter((k) => k !== '__source_layer').slice(0, 30).map((k) => {
+            const sample = list.find((f) => f.properties && f.properties[k] != null);
+            const v = sample ? sample.properties[k] : '';
+            return { id: uid('f'), label: k, key: k.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''), type: (typeof v === 'number') ? 'number' : 'text', required: false };
+          });
+          // only suffix when this one source really contains more than one geometry type
+          const suffix = kindsInSource > 1 ? '_' + typeMap[gtype].toUpperCase() : '';
+          layer = { id: uid('lyr'), projectId: this.state.project.id, name: (srcName + suffix).toUpperCase(), geomType: typeMap[gtype], fields, symbology: this.defaultSymb(typeMap[gtype], this.nextLayerColor()), createdAt: nowISO(), imported: true, sourceFile: sourceName };
+          await DB.put('layers', layer);
+          this.state.layers.push(layer);
+        }
+        layersTouched.push(layer.name);
       for (const f of list) {
         const props = f.properties || {};
         const data = {};
@@ -1406,6 +2345,7 @@ Object.assign(App, {
         await DB.put('records', rec);
         this.state.records.unshift(rec);
         totalImported++;
+        }
       }
     }
     this.renderAllLayers(); this.refreshBarSub();

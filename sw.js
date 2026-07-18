@@ -1,7 +1,7 @@
-/* Smart Maidani service worker — v3
+/* Smart Maidani service worker — v9
    Strategy: network-first for app files (updates deploy immediately, cache is offline fallback);
    cache-first for CDN libraries and map tiles. */
-const CACHE = 'smartmaidani-v3';
+const CACHE = 'smartmaidani-v15';
 const CORE = [
   './',
   './index.html',
@@ -21,11 +21,11 @@ const LIBS = [
   'https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.11.0/proj4.js',
   'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/shpwrite/0.3.2/shpwrite.js',
   'https://unpkg.com/shpjs@4.0.4/dist/shp.js',
   'https://unpkg.com/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js',
   'https://unpkg.com/georaster@1.6.0/dist/georaster.browser.bundle.min.js',
   'https://unpkg.com/georaster-layer-for-leaflet@3.10.0/dist/georaster-layer-for-leaflet.min.js',
+  'https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js',
 ];
 
 self.addEventListener('install', (e) => {

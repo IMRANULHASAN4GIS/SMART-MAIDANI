@@ -1,5 +1,5 @@
 /* ============================================================
-   TerraField — Field Maps–style GIS data collection
+   Smart Maidani — Field Maps–style GIS data collection
    Full-screen map · floating controls · slide-over panels
    Esri blue / clean white
    ============================================================ */
@@ -31,7 +31,7 @@
   --sh-1: 0 1px 3px rgba(27,37,48,0.12), 0 1px 2px rgba(27,37,48,0.08);
   --sh-2: 0 4px 16px rgba(27,37,48,0.16);
   --sh-3: 0 12px 40px rgba(27,37,48,0.24);
-  --header-h: 52px;
+  --header-h: 106px;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
@@ -57,7 +57,8 @@ svg { display: block; }
 .appbar {
   position: absolute; top: 0; left: 0; right: 0; height: var(--header-h);
   padding-top: env(safe-area-inset-top);
-  display: flex; align-items: center; gap: 10px; padding-left: 12px; padding-right: 12px;
+  display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px 0;
+  flex-wrap: wrap;
   background: var(--white);
   border-bottom: 1px solid var(--line);
   z-index: 40;
@@ -81,6 +82,60 @@ svg { display: block; }
 .bar-btn { width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center; color: var(--ink-2); }
 .bar-btn:hover { background: var(--grey-100); }
 .bar-btn svg { width: 20px; height: 20px; }
+.edit-tools { order: 5; flex-basis: calc(100% + 24px); height: 54px; margin: -2px -12px 0; padding: 5px 10px 6px; display: flex; align-items: stretch; gap: 2px; border-top: 1px solid #BAC3CC; background: linear-gradient(#fff,#F3F5F7); overflow-x: auto; scrollbar-width: none; }
+.edit-tools::-webkit-scrollbar { display: none; }
+.edit-tool { min-width: 54px; padding: 3px 7px; border-radius: 3px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; color: #263746; font-size: 9px; font-weight: 600; white-space: nowrap; }
+.edit-tool svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.edit-tool:hover:not(:disabled), .edit-tool.on { background: #DCECF7; color: #005E95; box-shadow: inset 0 0 0 1px #89B9D7; }
+.edit-tool.primary { color: var(--esri-blue-dark); }
+.edit-tool.danger:not(:disabled) { color: var(--red); }
+.edit-tool:disabled { opacity: .35; cursor: not-allowed; }
+.tool-separator { width: 1px; height: 34px; margin: auto 5px; flex: 0 0 1px; background: var(--line); }
+.editor-menu-button { height: 40px; min-width: 92px; margin: auto 2px; padding: 0 9px; display: flex; align-items: center; gap: 7px; border: 1px solid #AEB8C1; border-radius: 3px; background: linear-gradient(#fff,#E9EDF0); font-size: 12px; font-weight: 650; }
+.editor-menu-button:hover { background: #E6F2FA; }
+.session-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--grey-400); }
+.editor-menu-button.active .session-dot { background: var(--green); box-shadow: 0 0 0 2px #DDF3E0; }
+.menu-caret { margin-left: auto; font-size: 10px; }
+.editor-menu { position: absolute; z-index: 48; top: calc(var(--header-h) + env(safe-area-inset-top) - 2px); left: 10px; width: 185px; display: none; padding: 5px; background: #fff; border: 1px solid #AEB8C1; border-radius: 4px; box-shadow: var(--sh-2); }
+.editor-menu.show { display: block; }
+.editor-menu button { width: 100%; padding: 9px 10px; border-radius: 2px; text-align: left; font-size: 12px; }
+.editor-menu button:hover:not(:disabled) { background: #DCECF7; }
+.editor-menu button:disabled { color: var(--grey-400); cursor: not-allowed; }
+.edit-context { position: sticky; right: 0; z-index: 2; margin-left: auto; align-self: stretch; min-width: 196px; max-width: 220px; padding: 0 10px; display: flex; align-items: center; color: var(--grey-600); background: linear-gradient(90deg, rgba(255,255,255,.9), #fff 15%); box-shadow: -8px 0 12px rgba(255,255,255,.9); font-size: 11.5px; line-height: 1.25; }
+@media (max-width: 620px) { .appbar .net span:not(.d) { display:none; } .appbar .net { padding:5px; } .edit-context { min-width: 116px; max-width: 150px; } }
+@media (max-width: 430px) { .edit-context { display:none; } .edit-tool { flex:1; min-width:58px; } }
+
+/* Contextual feature actions appear only after selection, matching the Field Maps flow. */
+.selection-toolbar { position: absolute; left: 50%; bottom: calc(92px + env(safe-area-inset-bottom)); z-index: 39; width: min(720px, calc(100% - 24px)); transform: translate(-50%, 14px); opacity: 0; pointer-events: none; display: flex; align-items: center; gap: 12px; padding: 9px 10px 9px 14px; background: #fff; border: 1px solid var(--line); border-radius: 15px; box-shadow: var(--sh-3); transition: opacity .18s, transform .18s; }
+.selection-toolbar.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+.selection-summary { flex: 1; min-width: 160px; display: flex; align-items: center; gap: 9px; }
+.selection-dot { width: 12px; height: 12px; border: 3px solid #fff; border-radius: 50%; background: #00AEEF; box-shadow: 0 0 0 2px #00AEEF; flex-shrink: 0; }
+.selection-summary b, .selection-summary span { display: block; }
+.selection-summary b { font-size: 13px; }
+.selection-summary span { margin-top: 2px; color: var(--grey-500); font-size: 10.5px; }
+.selection-actions { display: flex; align-items: center; gap: 4px; }
+.selection-action { min-width: 62px; height: 48px; padding: 3px 9px; border-radius: 9px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; color: var(--ink-2); font-size: 10px; font-weight: 650; white-space: nowrap; }
+.selection-action:hover:not(:disabled) { background: var(--grey-100); }
+.selection-action.primary:not(:disabled) { color: var(--esri-blue-dark); background: var(--esri-blue-tint); }
+.selection-action.danger:not(:disabled) { color: var(--red); }
+.selection-action:disabled { opacity: .3; cursor: not-allowed; }
+.selection-action svg, .selection-close svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.selection-close { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; color: var(--grey-500); }
+.selection-close:hover { background: var(--grey-100); }
+@media (max-width: 650px) { .selection-toolbar { align-items: stretch; flex-direction: column; gap: 5px; padding: 9px; } .selection-summary { width: 100%; min-width: 0; padding: 2px 7px 5px; } .selection-actions { width: 100%; } .selection-action { flex: 1; padding-left: 3px; padding-right: 3px; } .selection-summary span { display: none; } }
+
+/* An explicit cursor communicates the current GIS tool; panning is never confused with editing. */
+#map.tool-pan { cursor: grab; }
+#map.tool-pan:active { cursor: grabbing; }
+#map.tool-select { cursor: default; }
+#map.tool-box, #map.tool-create { cursor: crosshair; }
+#map.tool-vertices { cursor: default; }
+#map.tool-move { cursor: move; }
+#map.tool-split, #map.tool-reshape, #map.tool-cut { cursor: crosshair; }
+#map.geometry-hover, #map.geometry-hover .leaflet-interactive { cursor: default !important; }
+.selection-rectangle { filter: drop-shadow(0 1px 2px rgba(0,74,120,.2)); }
+.geometry-move-handle { cursor: move; }
+.geometry-move-handle span { width: 28px; height: 28px; margin: 3px; display: block; transform: rotate(45deg); border-radius: 5px; background: var(--esri-blue); border: 3px solid #fff; box-shadow: 0 2px 8px rgba(0,0,0,.38); }
 
 /* ============================================================
    Floating map controls
@@ -103,9 +158,10 @@ svg { display: block; }
 .zoom-cluster .fab + .fab { border-top: 1px solid var(--line); }
 
 /* ---------- Basemap switcher ---------- */
-.basemap-fab { position: absolute; left: 12px; bottom: calc(var(--collect-h, 88px) + env(safe-area-inset-bottom)); z-index: 30; }
+/* basemap button lives in the right control cluster, directly under Layers */
+.basemap-fab { position: relative; z-index: 30; }
 .basemap-panel {
-  position: absolute; left: 12px; bottom: calc(var(--collect-h, 88px) + env(safe-area-inset-bottom));
+  position: absolute; right: 12px; top: calc(var(--header-h) + env(safe-area-inset-top) + 12px + 88px + 8px + 44px + 8px + 44px + 8px);
   z-index: 31; background: var(--white); border-radius: var(--r); box-shadow: var(--sh-3);
   padding: 8px; display: none; grid-template-columns: repeat(3, 84px); gap: 8px;
 }
@@ -154,6 +210,9 @@ svg { display: block; }
 .sk-finish { display: flex; align-items: center; gap: 6px; background: var(--esri-blue); color: #fff; padding: 0 16px; height: 40px; border-radius: 22px; font-size: 13.5px; font-weight: 650; flex-shrink: 0; }
 .sk-finish svg { width: 16px; height: 16px; }
 .sk-finish:disabled { background: var(--grey-300); color: var(--grey-500); pointer-events: none; }
+.sk-delete-vertex { height: 36px; padding: 0 12px; border-radius: 18px; color: var(--red); background: #FFF0EE; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.sk-delete-vertex:disabled { opacity: .35; cursor: not-allowed; }
+@media (max-width: 520px) { .sketch-bar.editing .sk-info { display: none; } .sketch-bar.editing .sk-delete-vertex { padding: 0 9px; font-size: 0; } .sketch-bar.editing .sk-delete-vertex::after { content: 'Delete'; font-size: 10px; } .sketch-bar.editing .sk-finish { padding: 0 13px; font-size: 0; } .sketch-bar.editing .sk-finish::after { content: 'Save'; font-size: 12px; } }
 
 /* ============================================================
    Collect bar (bottom) — the primary action, Field Maps style
@@ -502,3 +561,38 @@ input[type="checkbox"] { accent-color: var(--esri-blue); }
 .guide-banner .gb-txt { flex: 1; }
 .guide-banner .gb-txt b { display: block; font-size: 13px; margin-bottom: 1px; }
 .guide-banner .gb-act { background: rgba(255,255,255,0.2); border-radius: 8px; padding: 6px 11px; font-size: 12px; font-weight: 650; color: #fff; flex-shrink: 0; align-self: center; }
+
+
+/* ---------- geometry vertex editing (modify / insert / delete) ---------- */
+.v-node {
+  background: var(--white); border: 3px solid var(--esri-blue); border-radius: 4px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.4); cursor: grab; box-sizing: border-box;
+}
+.v-node:active { cursor: grabbing; transform: scale(1.15); }
+.v-node.selected { background: #00AEEF; border-color: #fff; box-shadow: 0 0 0 3px #007AC2, 0 3px 10px rgba(0,0,0,.45); transform: scale(1.12); }
+.v-mid {
+  background: #E8F7FE; border: 2px solid var(--esri-blue); border-radius: 3px;
+  opacity: .9; cursor: move; box-sizing: border-box; transform: rotate(45deg) scale(.8);
+}
+.v-mid:hover { opacity: 1; transform: rotate(45deg) scale(1); }
+/* redo only applies to vertex editing */
+.sk-editonly { display: none; }
+.sketch-bar.editing .sk-editonly { display: inline-flex; }
+
+/* symbology shortcut from the quick layers panel */
+.lp-symb { cursor: pointer; border-radius: 6px; transition: transform .12s, box-shadow .12s; }
+.lp-symb:hover { transform: scale(1.12); box-shadow: 0 0 0 2px var(--esri-blue-light); }
+
+/* ---------- records list: layer group headers ---------- */
+.rec-group {
+  display: flex; align-items: center; gap: 7px; margin: 14px 2px 6px;
+  font-size: 11px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--grey-600);
+}
+.rec-group:first-child { margin-top: 2px; }
+.rec-group .rg-ico { color: var(--esri-blue); display: inline-flex; }
+.rec-group .rg-name { color: var(--ink); }
+.rec-group .rg-count { margin-left: auto; font-weight: 600; color: var(--grey-500); text-transform: none; letter-spacing: 0; }
+
+/* ---------- record sheet: labeled tool buttons ---------- */
+.btn.tb { flex-direction: column; gap: 2px; padding: 8px 10px; line-height: 1; }
+.btn.tb span { font-size: 10px; font-weight: 600; }
