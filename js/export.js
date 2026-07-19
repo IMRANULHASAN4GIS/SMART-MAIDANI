@@ -591,7 +591,7 @@ ${rows || '<p>No media in this export.</p>'}</body></html>`;
   }
 
   /* ---------- Full ZIP package ---------- */
-  async function buildZipPackage(records, project, routeGeoJSON) {
+  async function buildZipPackage(records, project, routeGeoJSON, options) {
     const zip = new JSZip();
     const safe = project.name.replace(/\s+/g, '_');
     const context = buildExportRows(records);
@@ -604,7 +604,7 @@ ${rows || '<p>No media in this export.</p>'}</body></html>`;
     zip.file('data/features.qml', qgisStyleXml());   // QGIS picks this up beside features.geojson
     zip.file('data/features.geojson', JSON.stringify(toGeoJSON(records), null, 2));
     zip.file('data/features.kml', toKML(records, project.name));
-    zip.file('data/project.json', JSON.stringify({ project, records, fieldRoute: routeGeoJSON || null, exportedAt: nowISO() }, null, 2));
+    zip.file('data/project.json', JSON.stringify({ project, layers: (options && options.layers) || [], records, fieldRoute: routeGeoJSON || null, exportedAt: nowISO() }, null, 2));
     if (routeGeoJSON) zip.file('data/field_route.geojson', JSON.stringify(routeGeoJSON, null, 2));
 
     // Shapefile (may legitimately fail — never let it kill the whole package)

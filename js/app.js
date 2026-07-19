@@ -691,6 +691,12 @@ const App = {
     }
   },
   onFix(pos) {
+    // While an external RTK/GNSS receiver is connected and delivering sentences,
+    // phone-GPS fixes are ignored so lower-accuracy positions can't sneak in.
+    if (this._gnssActive && !pos._external) {
+      const fresh = this._gnssState && (Date.now() - this._gnssState.lastSentence) < 10000;
+      if (fresh) return; // receiver silent >10s -> temporarily fall back to phone GPS
+    }
     const { latitude, longitude, altitude, accuracy, heading, speed } = pos.coords;
     const fix = { lat: latitude, lng: longitude, z: (altitude != null && !isNaN(altitude)) ? altitude : null, accuracy, heading: (heading != null && !isNaN(heading)) ? heading : null, speed: (speed != null && !isNaN(speed)) ? speed : null, ts: Date.now() };
     this.state.lastFix = fix;
@@ -1016,19 +1022,40 @@ Object.assign(App, {
     if (!geomLocked) document.querySelectorAll('#lGeom [data-g]').forEach((el) => el.onclick = () => { const keep = l.symbology && l.symbology.color; l.geomType = el.dataset.g; if (!existing) l.symbology = this.defaultSymb(l.geomType, keep); document.querySelectorAll('#lGeom [data-g]').forEach((x) => x.classList.toggle('on', x === el)); });
     const renderFields = () => {
       const host = document.getElementById('fieldList');
-      host.innerHTML = l.fields.length === 0 ? '<div class="muted" style="padding:4px 0">No custom fields yet.</div>' : l.fields.map((f, i) => `
+      host.innerHTML = l.fields.length === 0 ? '<div class="muted" style="padding:4px 0">No custom fields yet.</div>' : l.fields.map((f, i) => {
+        const others = l.fields.filter((x, xi) => xi !== i && x.label.trim());
+        const cond = f.condition || null;
+        return `
         <div class="fld-item">
           <div class="fld-head"><input class="inp fld-name" data-i="${i}" value="${esc(f.label)}" placeholder="Field name" style="flex:1" />
             <select class="sel fld-type" data-i="${i}" style="width:120px">${['text', 'number', 'select', 'bool', 'date', 'time'].map((t) => `<option value="${t}" ${f.type === t ? 'selected' : ''}>${t}</option>`).join('')}</select>
             <button class="mini" data-rmf="${i}">${icon('trash', 16)}</button></div>
           ${f.type === 'select' ? `<input class="inp fld-opts" data-i="${i}" value="${esc((f.options || []).join(', '))}" placeholder="Options, comma-separated" style="margin-top:7px" />` : ''}
           <label class="fld-req"><input type="checkbox" class="fld-reqcb" data-i="${i}" ${f.required ? 'checked' : ''} /> required</label>
-        </div>`).join('');
+          ${others.length ? `
+          <div class="fld-cond">
+            <label class="fld-req"><input type="checkbox" class="fld-condcb" data-i="${i}" ${cond ? 'checked' : ''} /> only show this field when…</label>
+            <div class="fld-cond-row" data-i="${i}" style="display:${cond ? 'flex' : 'none'}">
+              <select class="sel fld-cond-field" data-i="${i}" style="flex:1">${others.map((o) => `<option value="${o.key || o.label}" ${cond && cond.field === (o.key || o.label) ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>
+              <select class="sel fld-cond-op" data-i="${i}" style="width:88px"><option value="equals" ${cond && cond.op === 'equals' ? 'selected' : ''}>=</option><option value="not_equals" ${cond && cond.op === 'not_equals' ? 'selected' : ''}>≠</option></select>
+              <input class="inp fld-cond-val" data-i="${i}" value="${esc(cond ? cond.value : '')}" placeholder="value" style="flex:1" />
+            </div>
+          </div>` : ''}
+        </div>`;
+      }).join('');
       host.querySelectorAll('.fld-name').forEach((el) => el.oninput = () => { l.fields[el.dataset.i].label = el.value; });
       host.querySelectorAll('.fld-type').forEach((el) => el.onchange = () => { l.fields[el.dataset.i].type = el.value; renderFields(); });
       host.querySelectorAll('.fld-opts').forEach((el) => el.oninput = () => { l.fields[el.dataset.i].options = el.value.split(',').map((s) => s.trim()).filter(Boolean); });
       host.querySelectorAll('.fld-reqcb').forEach((el) => el.onchange = () => { l.fields[el.dataset.i].required = el.checked; });
       host.querySelectorAll('[data-rmf]').forEach((el) => el.onclick = () => { l.fields.splice(parseInt(el.dataset.rmf), 1); renderFields(); });
+      host.querySelectorAll('.fld-condcb').forEach((el) => el.onchange = () => {
+        const i = parseInt(el.dataset.i);
+        if (el.checked) { const row = host.querySelector(`.fld-cond-row[data-i="${i}"]`); const fEl = host.querySelector(`.fld-cond-field[data-i="${i}"]`); const opEl = host.querySelector(`.fld-cond-op[data-i="${i}"]`); const valEl = host.querySelector(`.fld-cond-val[data-i="${i}"]`); if (row) row.style.display = 'flex'; l.fields[i].condition = { field: fEl ? fEl.value : '', op: opEl ? opEl.value : 'equals', value: valEl ? valEl.value : '' }; }
+        else { delete l.fields[i].condition; renderFields(); }
+      });
+      host.querySelectorAll('.fld-cond-field').forEach((el) => el.onchange = () => { const i = parseInt(el.dataset.i); if (l.fields[i].condition) l.fields[i].condition.field = el.value; });
+      host.querySelectorAll('.fld-cond-op').forEach((el) => el.onchange = () => { const i = parseInt(el.dataset.i); if (l.fields[i].condition) l.fields[i].condition.op = el.value; });
+      host.querySelectorAll('.fld-cond-val').forEach((el) => el.oninput = () => { const i = parseInt(el.dataset.i); if (l.fields[i].condition) l.fields[i].condition.value = el.value; });
     };
     renderFields();
     document.getElementById('addField').onclick = () => { l.fields.push({ id: uid('f'), label: '', type: 'text', required: false }); renderFields(); };
@@ -1047,6 +1074,8 @@ Object.assign(App, {
       if (!l.name) { this.toast('Enter the asset type name', 'err'); return; }
       // assign ids/labels
       l.fields = l.fields.filter((f) => f.label.trim()).map((f) => ({ ...f, id: f.id || uid('f'), key: f.label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') }));
+      // conditions were recorded against a temp key-or-label; remap to the final generated key
+      l.fields.forEach((f) => { if (f.condition && f.condition.field && !l.fields.some((x) => x.key === f.condition.field)) { const match = l.fields.find((x) => x.label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') === f.condition.field || x.label === f.condition.field); if (match) f.condition.field = match.key; else delete f.condition; } });
       await DB.put('layers', l);
       const i = this.state.layers.findIndex((x) => x.id === l.id);
       if (i >= 0) this.state.layers[i] = l; else this.state.layers.push(l);
@@ -1426,7 +1455,7 @@ Object.assign(App, {
 
   openForm() {
     const d = this.state.draft, l = d._layer;
-    const missing = l.fields.filter((f) => f.required && !d.data[f.key]);
+    const missing = l.fields.filter((f) => f.required && !d.data[f.key] && this.fieldVisible(f, d.data));
     const geomBtns = l.geomType === 'point'
       ? `<button class="btn btn-primary flex" id="gpsPoint">${icon('navigation', 16)} Use GPS</button><button class="btn btn-ghost flex" id="tapMap">${icon('mapPin', 16)} Tap map</button>`
       : `<button class="btn btn-primary btn-block" id="drawMap">${icon('layers', 16)} Draw ${l.geomType} on map</button>`;
@@ -1436,7 +1465,7 @@ Object.assign(App, {
         ${this.geoReadout(d)}
       </div>
       <div class="card"><div class="card-lbl">${esc(l.name)} attributes</div>
-        ${l.fields.length === 0 ? '<div class="muted">This layer has no custom fields. Add some via Layers → edit.</div>' : l.fields.map((f) => this.fieldHTML(f, d.data[f.key])).join('')}
+        ${l.fields.length === 0 ? '<div class="muted">This layer has no custom fields. Add some via Layers → edit.</div>' : l.fields.map((f) => this.fieldHTML(f, d.data[f.key], d.data)).join('')}
       </div>
       <div class="card"><div class="card-lbl">Photos & video ${icon('camera', 12, 'display:inline;vertical-align:-2px')}</div>
         <div style="display:flex;gap:8px;margin-bottom:${(d.media || []).length ? 11 : 0}px">
@@ -1469,7 +1498,14 @@ Object.assign(App, {
     return `<div class="geo-readout" style="color:var(--grey-500)">No location yet — capture it above.</div>`;
   },
 
-  fieldHTML(f, val) {
+  fieldVisible(f, data) {
+    if (!f.condition || !f.condition.field) return true;
+    const actual = (data[f.condition.field] ?? '');
+    const want = f.condition.value ?? '';
+    const eq = String(actual) === String(want);
+    return f.condition.op === 'not_equals' ? !eq : eq;
+  },
+  fieldHTML(f, val, data) {
     const v = val ?? '', req = f.required ? '<span class="req">*</span>' : '';
     let ctl = '';
     if (f.type === 'select') ctl = `<select class="sel" data-f="${f.key}"><option value="">Select…</option>${(f.options || []).map((o) => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
@@ -1477,18 +1513,33 @@ Object.assign(App, {
     else if (f.type === 'number') ctl = `<input class="inp" type="number" inputmode="decimal" data-f="${f.key}" value="${esc(v)}" />`;
     else if (f.type === 'date') ctl = `<input class="inp" type="date" data-f="${f.key}" value="${esc(v)}" />`;
     else if (f.type === 'time') ctl = `<input class="inp" type="time" data-f="${f.key}" value="${esc(v)}" />`;
-    else ctl = `<input class="inp" type="text" data-f="${f.key}" value="${esc(v)}" />`;
-    return `<div class="field"><label class="lbl">${esc(f.label)} ${req}</label>${ctl}</div>`;
+    else ctl = `<div class="text-with-scan"><input class="inp" type="text" data-f="${f.key}" value="${esc(v)}" /><button type="button" class="mini scan-btn" data-scan="${f.key}" title="Scan barcode/QR">${icon('camera', 15)}</button></div>`;
+    const condAttr = f.condition ? ` data-cond-field="${esc(f.condition.field)}" data-cond-op="${esc(f.condition.op)}" data-cond-val="${esc(f.condition.value)}"` : '';
+    const hidden = f.condition && data && !this.fieldVisible(f, data) ? ' style="display:none"' : '';
+    return `<div class="field" data-fieldwrap="${f.key}"${condAttr}${hidden}><label class="lbl">${esc(f.label)} ${req}</label>${ctl}</div>`;
   },
 
   wireForm() {
     const d = this.state.draft, l = d._layer;
     const reqKeys = new Set(l.fields.filter((f) => f.required).map((f) => f.key));
-    const sync = () => { const m = l.fields.filter((f) => f.required && !d.data[f.key]); const b = document.getElementById('fDone'); if (b) b.disabled = m.length > 0; };
+    const applyConditions = () => {
+      document.querySelectorAll('[data-fieldwrap]').forEach((wrap) => {
+        const f = l.fields.find((x) => x.key === wrap.dataset.fieldwrap);
+        if (!f || !f.condition) return;
+        const visible = this.fieldVisible(f, d.data);
+        wrap.style.display = visible ? '' : 'none';
+      });
+    };
+    const sync = () => {
+      const m = l.fields.filter((f) => f.required && !d.data[f.key] && this.fieldVisible(f, d.data));
+      const b = document.getElementById('fDone'); if (b) b.disabled = m.length > 0;
+    };
     document.querySelectorAll('[data-f]').forEach((el) => {
-      if (el.classList.contains('seg')) el.querySelectorAll('button').forEach((b) => b.onclick = () => { d.data[el.dataset.f] = b.dataset.v; el.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); if (reqKeys.has(el.dataset.f)) sync(); });
-      else { el.oninput = () => { d.data[el.dataset.f] = el.value; if (reqKeys.has(el.dataset.f)) sync(); }; el.onchange = () => { d.data[el.dataset.f] = el.value; if (reqKeys.has(el.dataset.f)) sync(); }; }
+      if (el.classList.contains('seg')) el.querySelectorAll('button').forEach((b) => b.onclick = () => { d.data[el.dataset.f] = b.dataset.v; el.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); if (reqKeys.has(el.dataset.f)) sync(); applyConditions(); sync(); });
+      else { el.oninput = () => { d.data[el.dataset.f] = el.value; if (reqKeys.has(el.dataset.f)) sync(); applyConditions(); sync(); }; el.onchange = () => { d.data[el.dataset.f] = el.value; if (reqKeys.has(el.dataset.f)) sync(); applyConditions(); sync(); }; }
     });
+    applyConditions(); sync();
+    document.querySelectorAll('[data-scan]').forEach((btn) => btn.onclick = () => this.openScanner(btn.dataset.scan));
     const gp = document.getElementById('gpsPoint'); if (gp) gp.onclick = () => this.captureGPS();
     const tm = document.getElementById('tapMap'); if (tm) tm.onclick = () => this.beginPlacePoint();
     const dm = document.getElementById('drawMap'); if (dm) dm.onclick = () => this.beginDraw(l.geomType);
@@ -1879,6 +1930,77 @@ Object.assign(App, {
     this.camEl('camRetry').onclick = () => this.startCameraStream();
     this.camEl('camUseFile').onclick = () => { this.closeCamera(); const input = this._camMode === 'video' ? document.getElementById('iVideo') : document.getElementById('iPhoto'); if (input) input.click(); };
     this.camEl('camShutter').onclick = () => { if (this._camMode === 'photo') this.capturePhoto(); else this.toggleVideoRecording(); };
+    this.wireScannerControls();
+  },
+
+  /* ---------- Barcode / QR scanning: fills a text field from a camera scan ----------
+     Uses the native BarcodeDetector API (Chrome/Android — fast, offline, no dependency).
+     Safari on iOS does not implement BarcodeDetector; scanning is unavailable there and
+     the surveyor is told plainly to type the value, rather than silently failing. */
+  scanReady() { return ['scanView', 'scanVideo', 'scanStatus', 'scanError', 'scanErrorMsg'].every((id) => document.getElementById(id)); },
+  wireScannerControls() {
+    if (!this.scanReady()) return;
+    document.getElementById('scanClose').onclick = () => this.closeScanner();
+    document.getElementById('scanCloseBtn2').onclick = () => this.closeScanner();
+  },
+  async openScanner(targetFieldKey) {
+    if (!this.scanReady()) { this.toast('Scanner screen missing — update the app files (index.html) and reload', 'err'); return; }
+    if (typeof BarcodeDetector === 'undefined') {
+      document.getElementById('scanView').style.display = 'flex';
+      document.getElementById('scanError').classList.add('show');
+      document.getElementById('scanErrorMsg').textContent = 'Barcode scanning isn\'t supported in this browser (works on Chrome for Android). Type the value manually.';
+      return;
+    }
+    if (!window.isSecureContext) { this.toast('Scanning needs HTTPS (or localhost).', 'err'); return; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { this.toast('Camera not available for scanning on this device', 'err'); return; }
+    this._scanTarget = targetFieldKey;
+    const view = document.getElementById('scanView'), status = document.getElementById('scanStatus'), err = document.getElementById('scanError');
+    err.classList.remove('show'); status.textContent = 'Point the camera at a barcode or QR code'; view.style.display = 'flex';
+    const video = document.getElementById('scanVideo');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      this._scanStream = stream; video.srcObject = stream;
+      try { await video.play(); } catch {}
+      this._scanDetector = this._scanDetector || new BarcodeDetector({ formats: ['qr_code', 'ean_13', 'ean_8', 'code_128', 'code_39', 'upc_a', 'upc_e', 'itf', 'data_matrix', 'pdf417'] });
+      this._scanning = true;
+      this.scanLoop();
+    } catch (e) {
+      err.classList.add('show');
+      document.getElementById('scanErrorMsg').textContent = (e && e.name === 'NotAllowedError') ? 'Camera access was blocked. Allow it in your browser settings, then try again.' : 'Could not start the camera for scanning.';
+    }
+  },
+  async scanLoop() {
+    if (!this._scanning) return;
+    const video = document.getElementById('scanVideo');
+    try {
+      if (video.videoWidth) {
+        const codes = await this._scanDetector.detect(video);
+        if (codes && codes.length) { this.onScanSuccess(codes[0].rawValue); return; }
+      }
+    } catch { /* transient decode errors are expected between frames — keep looping */ }
+    this._scanRAF = requestAnimationFrame(() => this.scanLoop());
+  },
+  onScanSuccess(value) {
+    const key = this._scanTarget;
+    this.closeScanner();
+    if (!key || !this.state.draft) return;
+    this.state.draft.data[key] = value;
+    const input = document.querySelector(`[data-f="${key}"]`);
+    if (input) input.value = value;
+    // conditional visibility and required-field validation may depend on this value
+    document.querySelectorAll('[data-fieldwrap]').forEach((wrap) => {
+      const l = this.state.draft._layer, f = l && l.fields.find((x) => x.key === wrap.dataset.fieldwrap);
+      if (f && f.condition) wrap.style.display = this.fieldVisible(f, this.state.draft.data) ? '' : 'none';
+    });
+    const btn = document.getElementById('fDone');
+    if (btn && this.state.draft._layer) { const missing = this.state.draft._layer.fields.filter((f) => f.required && !this.state.draft.data[f.key] && this.fieldVisible(f, this.state.draft.data)); btn.disabled = missing.length > 0; }
+    this.toast(`Scanned: ${value}`, 'ok');
+  },
+  closeScanner() {
+    this._scanning = false;
+    if (this._scanRAF) cancelAnimationFrame(this._scanRAF);
+    if (this._scanStream) { this._scanStream.getTracks().forEach((t) => t.stop()); this._scanStream = null; }
+    const view = document.getElementById('scanView'); if (view) view.style.display = 'none';
   },
   capturePhoto() {
     const video = this.camEl('camVideo');
@@ -2012,6 +2134,7 @@ Object.assign(App, {
       <div class="tpl" id="mImport"><div class="ic">${icon('upload', 21)}</div><div class="tx"><div class="t">Import existing data</div><div class="d">Load GeoJSON into a layer to edit</div></div><div class="chev">${icon('chevron', 18)}</div></div>
       <div class="tpl" id="mExport"><div class="ic">${icon('download', 21)}</div><div class="tx"><div class="t">Export & share</div><div class="d">GeoJSON, KML, Shapefile, CSV, ZIP</div></div><div class="chev">${icon('chevron', 18)}</div></div>
       <div class="tpl" id="mRoute"><div class="ic">${icon('navigation', 21)}</div><div class="tx"><div class="t">Default Field Route</div><div class="d">${this.routeDistanceText(this.routeStats().distanceM)} · ${this.routeStats().pointCount} saved GPS points${this.state.route.paused ? ' · paused' : ''}</div></div><div class="chev">${icon('chevron', 18)}</div></div>
+      <div class="tpl" id="mGnss"><div class="ic">${icon('target', 21)}</div><div class="tx"><div class="t">External GNSS receiver</div><div class="d">${this._gnssActive ? 'Connected · ' + this.gnssFixLabel() : 'Pair an RTK receiver for cm accuracy'}</div></div><div class="chev">${icon('chevron', 18)}</div></div>
       ${this.state.project ? `<div class="card" style="margin-top:6px"><div class="card-lbl">${icon('globe', 12, 'display:inline;vertical-align:-2px')} Project coordinate system</div><div style="font-family:var(--mono);font-size:12.5px">${esc(this.state.project.crsName)} · ${esc(this.state.project.crsCode)}</div></div>` : ''}
       <button class="btn btn-danger btn-block" id="mWipe">${icon('trash', 16)} Erase all local data</button>
       <div class="muted" style="text-align:center;margin-top:14px">Smart Maidani · offline-first field GIS</div>`;
@@ -2019,6 +2142,7 @@ Object.assign(App, {
     document.getElementById('editUser').onclick = () => this.showWelcome();
     document.getElementById('mProjects').onclick = () => this.navTo(this.openProjectPicker);
     document.getElementById('mLayers').onclick = () => this.navTo(this.openLayers);
+    const mg = document.getElementById('mGnss'); if (mg) mg.onclick = () => this.navTo(this.openGNSSSheet);
     document.getElementById('mImport').onclick = () => this.navTo(this.openImport);
     document.getElementById('mExport').onclick = () => this.navTo(this.openExport);
     document.getElementById('mRoute').onclick = () => this.navTo(this.openRouteSummary);
@@ -2084,7 +2208,7 @@ Object.assign(App, {
     document.getElementById('exZip').onclick = async () => {
       const s = recsFor(), route = this.routeGeoJSON(); if (!s.length && !route.features.length) { this.toast('No records or route points', 'err'); return; }
       const btn = document.getElementById('exZip'); btn.innerHTML = `${icon('refresh', 16, 'display:inline-block')} Building…`;
-      try { const blob = await Exporter.buildZipPackage(s, proj, route.features.length ? route : null); downloadBlob(`${safe}_package.zip`, blob, 'application/zip'); this.toast('ZIP downloaded', 'ok'); } catch (e) { this.toast('ZIP failed: ' + e.message, 'err'); }
+      try { const blob = await Exporter.buildZipPackage(s, proj, route.features.length ? route : null, { layers: this.state.layers.filter((l) => l.projectId === proj.id) }); downloadBlob(`${safe}_package.zip`, blob, 'application/zip'); this.toast('ZIP downloaded', 'ok'); } catch (e) { this.toast('ZIP failed: ' + e.message, 'err'); }
       btn.innerHTML = `${icon('package', 16)} Build ZIP (data + media + report)`;
     };
     document.getElementById('exShare').onclick = async () => { const s = recsFor(); if (!s.length) return; const gj = JSON.stringify(reproj(Exporter.toGeoJSON(s)), null, 2); const file = new File([gj], `${safe}.geojson`, { type: 'application/geo+json' }); if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: proj.name }); } catch {} } else if (navigator.share) { try { await navigator.share({ title: proj.name, text: `${s.length} records` }); } catch {} } else this.toast('Sharing not supported — use download', 'err'); };
@@ -2095,7 +2219,7 @@ Object.assign(App, {
         // Build the full ZIP package and hand it to the device share sheet — choosing
         // Gmail/Outlook there attaches the file automatically to a new email.
         const route = this.routeGeoJSON();
-        const blob = await Exporter.buildZipPackage(s, proj, route.features.length ? route : null);
+        const blob = await Exporter.buildZipPackage(s, proj, route.features.length ? route : null, { layers: this.state.layers.filter((l) => l.projectId === proj.id) });
         const file = new File([blob], `${safe}_Package.zip`, { type: 'application/zip' });
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
           await navigator.share({ files: [file], title: `Smart Maidani export — ${proj.name}`, text: `${s.length} record(s) from "${proj.name}". Package includes GeoJSON, KML, Shapefile, CSV, Excel and media.` });
@@ -2290,7 +2414,13 @@ Object.assign(App, {
       <input type="file" id="impFile" accept=".geojson,.json,.kml,.zip,application/geo+json,application/json,application/vnd.google-earth.kml+xml,application/zip" hidden />
       <button class="btn btn-primary btn-block btn-lg" id="impBtn">${icon('upload', 17)} Choose file to import</button>
       ${layers.length ? `<div class="field" style="margin-top:14px"><label class="lbl">Or import into an existing layer (matching geometry only)</label><select class="sel" id="impLayer"><option value="">— create new layer(s) automatically —</option>${layers.map((l) => `<option value="${l.id}">${esc(l.name)} (${l.geomType})</option>`).join('')}</select></div>` : ''}
-      <div id="impStatus" class="muted" style="margin-top:12px"></div>`;
+      <div id="impStatus" class="muted" style="margin-top:12px"></div>
+      <div class="card" style="margin-top:16px"><div class="card-lbl">Merge from another surveyor</div>
+        <div class="note" style="margin-bottom:10px">Combine another device's work into this project — bring in their <b>project.json</b> (or the full ZIP export) from an offline surveyor. Matches records by ID and keeps the newest version of anything captured on both devices; layers not in this project are created automatically. <b>Photos/videos are not carried over</b> by this merge — only geometry and attributes; for media, copy the ZIP's media folder manually.</div>
+        <input type="file" id="mergeFile" accept=".json,.zip,application/json,application/zip" hidden />
+        <button class="btn btn-ghost btn-block" id="mergeBtn">${icon('upload', 17)} Choose project.json or ZIP to merge</button>
+        <div id="mergeStatus" class="muted" style="margin-top:10px"></div>
+      </div>`;
     this.openSheet('Import GIS data', body);
     const file = document.getElementById('impFile');
     document.getElementById('impBtn').onclick = () => file.click();
@@ -2309,6 +2439,99 @@ Object.assign(App, {
         this.toast('Import failed: ' + (err.message || 'unreadable file'), 'err');
       }
     };
+    const mergeFile = document.getElementById('mergeFile');
+    document.getElementById('mergeBtn').onclick = () => mergeFile.click();
+    mergeFile.onchange = async (e) => {
+      const f = e.target.files[0]; e.target.value = '';
+      if (!f) return;
+      const status = document.getElementById('mergeStatus');
+      status.textContent = 'Reading ' + f.name + '…';
+      try {
+        const payload = await this.readMergePayload(f);
+        status.textContent = 'Merging…';
+        const summary = await this.mergeProjectData(payload);
+        status.textContent = '';
+        this.toast(`Merged: ${summary.layersCreated} layer(s) added, ${summary.added} record(s) added, ${summary.updated} updated, ${summary.kept} kept (already newer locally)`, 'ok');
+        this.renderAllLayers(); this.refreshBarSub();
+      } catch (err) {
+        console.warn('merge failed', err);
+        status.textContent = '';
+        this.toast('Merge failed: ' + (err.message || 'unreadable file'), 'err');
+      }
+    };
+  },
+
+  // Read either a raw project.json file, or a full ZIP export (extracts data/project.json from it).
+  async readMergePayload(f) {
+    const name = (f.name || '').toLowerCase();
+    if (name.endsWith('.zip')) {
+      if (typeof JSZip === 'undefined') throw new Error('ZIP engine not available');
+      const zip = await JSZip.loadAsync(await f.arrayBuffer());
+      const entry = zip.file('data/project.json');
+      if (!entry) throw new Error('no data/project.json found inside this ZIP');
+      return JSON.parse(await entry.async('string'));
+    }
+    return JSON.parse(await f.text());
+  },
+
+  // Merge another device's project.json payload into the currently open project.
+  // Matches layers by (name + geomType); matches records by their stable id, newest updatedAt wins.
+  async mergeProjectData(payload) {
+    if (!payload || !Array.isArray(payload.records)) throw new Error('not a recognized project export');
+    const proj = this.state.project;
+    const localLayers = this.state.layers.filter((l) => l.projectId === proj.id);
+    const srcLayers = Array.isArray(payload.layers) ? payload.layers : [];
+    const layerMap = new Map(); // source layerId -> local layer object
+    let layersCreated = 0;
+    for (const sl of srcLayers) {
+      let match = localLayers.find((ll) => ll.name.toLowerCase() === (sl.name || '').toLowerCase() && ll.geomType === sl.geomType);
+      if (!match) {
+        match = { id: uid('lyr'), projectId: proj.id, name: sl.name || 'Merged Layer', geomType: sl.geomType || 'point', fields: (sl.fields || []).map((f) => ({ ...f })), symbology: sl.symbology || this.defaultSymb(sl.geomType || 'point', this.nextLayerColor()), stream: !!sl.stream, createdAt: nowISO() };
+        await DB.put('layers', match);
+        this.state.layers.push(match); localLayers.push(match);
+        layersCreated++;
+      }
+      layerMap.set(sl.id, match);
+    }
+    // records referencing a layer we couldn't map (e.g. layers array missing/older export) fall back
+    // to a single catch-all "Merged Records" layer matched on geometry type, created on demand.
+    const fallbackLayer = {};
+    const getFallback = (geomType) => {
+      if (fallbackLayer[geomType]) return fallbackLayer[geomType];
+      let match = localLayers.find((ll) => ll.name === 'Merged Records' && ll.geomType === geomType);
+      if (!match) { match = { id: uid('lyr'), projectId: proj.id, name: 'Merged Records', geomType, fields: [], symbology: this.defaultSymb(geomType, this.nextLayerColor()), createdAt: nowISO() }; }
+      fallbackLayer[geomType] = match;
+      return match;
+    };
+
+    let added = 0, updated = 0, kept = 0;
+    const localById = new Map(this.state.records.map((r) => [r.id, r]));
+    for (const sr of payload.records) {
+      if (!sr || !sr.id || !sr.geometry) continue;
+      let targetLayer = layerMap.get(sr.layerId);
+      if (!targetLayer) {
+        const geomType = sr.geomType || (sr.geometry.type === 'Point' ? 'point' : sr.geometry.type === 'LineString' ? 'line' : 'polygon');
+        targetLayer = getFallback(geomType);
+        if (!this.state.layers.some((l) => l.id === targetLayer.id)) { await DB.put('layers', targetLayer); this.state.layers.push(targetLayer); localLayers.push(targetLayer); layersCreated++; }
+      }
+      const rec = { ...sr, projectId: proj.id, layerId: targetLayer.id, layerName: targetLayer.name };
+      const existing = localById.get(rec.id);
+      if (!existing) {
+        await DB.put('records', rec);
+        this.state.records.unshift(rec); localById.set(rec.id, rec);
+        added++;
+      } else {
+        const srcTime = Date.parse(rec.updatedAt || rec.createdAt || 0) || 0;
+        const localTime = Date.parse(existing.updatedAt || existing.createdAt || 0) || 0;
+        if (srcTime > localTime) {
+          await DB.put('records', rec);
+          const i = this.state.records.findIndex((r) => r.id === rec.id);
+          if (i >= 0) this.state.records[i] = rec;
+          updated++;
+        } else kept++;
+      }
+    }
+    return { layersCreated, added, updated, kept };
   },
 
   async parseGISFile(f) {
@@ -2665,6 +2888,188 @@ Object.assign(App, {
       a.DISTRICT = document.getElementById('sfDist').value.trim();
       this.closeSheet(); this.toast('Attributes applied to next captures', 'ok');
     };
+  },
+});
+
+/* ============================================================
+   Part 10 — External RTK/GNSS receiver support (Web Bluetooth)
+   Pairs a Bluetooth GNSS receiver (Nordic UART-style serial),
+   parses its NMEA stream (GGA + GST + RMC + VTG) and feeds fixes
+   into the SAME onFix() pipeline the phone GPS uses — so manual
+   capture, streaming capture and route tracking all pick up the
+   corrected positions automatically.
+   Platform note: Web Bluetooth exists on Chrome for Android and
+   desktop Chrome/Edge. Safari on iOS does NOT implement it — the
+   feature reports that plainly instead of failing silently.
+   ============================================================ */
+Object.assign(App, {
+  // Nordic UART Service — the de-facto BLE serial used by many GNSS receivers
+  GNSS_NUS_SERVICE: '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
+  GNSS_NUS_TX: '6e400003-b5a3-f393-e0a9-e50e24dcca9e', // notifications from device
+
+  gnssSupported() { return !!(navigator.bluetooth && navigator.bluetooth.requestDevice); },
+
+  async connectGNSS() {
+    if (!this.gnssSupported()) {
+      this.toast('Web Bluetooth is not available in this browser. Works on Chrome for Android and desktop Chrome/Edge — not on iPhone Safari.', 'err');
+      return;
+    }
+    try {
+      const device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [this.GNSS_NUS_SERVICE] }],
+        optionalServices: [this.GNSS_NUS_SERVICE],
+      });
+      this.toast(`Connecting to ${device.name || 'receiver'}…`);
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(this.GNSS_NUS_SERVICE);
+      const tx = await service.getCharacteristic(this.GNSS_NUS_TX);
+      this._gnssDevice = device;
+      this._gnssBuffer = '';
+      this._gnssState = { fixQuality: 0, hdop: null, accuracy: null, alt: null, speed: null, heading: null, lastSentence: 0 };
+      device.addEventListener('gattserverdisconnected', () => this.onGNSSDisconnect());
+      tx.addEventListener('characteristicvaluechanged', (e) => this.onGNSSData(e.target.value));
+      await tx.startNotifications();
+      this._gnssActive = true;
+      // External receiver takes over as the position source; phone GPS watch stays
+      // running as a fallback but its fixes are ignored while the receiver is live.
+      this.toast(`${device.name || 'GNSS receiver'} connected — waiting for satellite fix`, 'ok');
+      this.updateGNSSBadge();
+    } catch (e) {
+      if (e && e.name === 'NotFoundError') return; // user cancelled the picker — not an error
+      this.toast('Could not connect to the receiver: ' + (e.message || e.name || 'unknown error'), 'err');
+    }
+  },
+  disconnectGNSS() {
+    this._gnssActive = false;
+    try { if (this._gnssDevice && this._gnssDevice.gatt.connected) this._gnssDevice.gatt.disconnect(); } catch {}
+    this._gnssDevice = null;
+    this.updateGNSSBadge();
+    this.toast('External receiver disconnected — using phone GPS', 'ok');
+  },
+  onGNSSDisconnect() {
+    if (!this._gnssActive) return;
+    this._gnssActive = false;
+    this.updateGNSSBadge();
+    this.toast('GNSS receiver connection lost — using phone GPS. Reconnect from the menu.', 'err');
+  },
+
+  onGNSSData(dataView) {
+    // BLE delivers arbitrary chunks; accumulate and process complete lines only.
+    let text = '';
+    for (let i = 0; i < dataView.byteLength; i++) text += String.fromCharCode(dataView.getUint8(i));
+    this._gnssBuffer += text;
+    let idx;
+    while ((idx = this._gnssBuffer.indexOf('\n')) >= 0) {
+      const line = this._gnssBuffer.slice(0, idx).trim();
+      this._gnssBuffer = this._gnssBuffer.slice(idx + 1);
+      if (line.startsWith('$')) this.parseNMEA(line);
+    }
+    if (this._gnssBuffer.length > 4096) this._gnssBuffer = ''; // corrupt stream guard
+  },
+
+  nmeaChecksumOK(line) {
+    const star = line.lastIndexOf('*');
+    if (star < 0) return false;
+    let sum = 0;
+    for (let i = 1; i < star; i++) sum ^= line.charCodeAt(i);
+    return sum === parseInt(line.slice(star + 1, star + 3), 16);
+  },
+  // ddmm.mmmm (+ hemisphere) -> decimal degrees
+  nmeaCoord(value, hemi) {
+    if (!value) return null;
+    const dot = value.indexOf('.');
+    const degDigits = dot > 4 ? 3 : 2; // longitude has 3 degree digits, latitude 2
+    const deg = parseInt(value.slice(0, degDigits), 10);
+    const min = parseFloat(value.slice(degDigits));
+    if (!isFinite(deg) || !isFinite(min)) return null;
+    let dd = deg + min / 60;
+    if (hemi === 'S' || hemi === 'W') dd = -dd;
+    return dd;
+  },
+
+  parseNMEA(line) {
+    if (!this.nmeaChecksumOK(line)) return;
+    const star = line.lastIndexOf('*');
+    const parts = line.slice(0, star).split(',');
+    const type = parts[0].slice(3); // strip $GP/$GN/$GL talker prefix
+    const st = this._gnssState;
+    st.lastSentence = Date.now();
+
+    if (type === 'GGA') {
+      // $..GGA,time,lat,NS,lon,EW,quality,numSV,HDOP,alt,M,sep,M,diffAge,diffStation
+      const lat = this.nmeaCoord(parts[2], parts[3]);
+      const lng = this.nmeaCoord(parts[4], parts[5]);
+      st.fixQuality = parseInt(parts[6], 10) || 0;
+      st.hdop = parseFloat(parts[8]);
+      st.alt = parseFloat(parts[9]);
+      if (lat == null || lng == null || st.fixQuality === 0) { this.updateGNSSBadge(); return; }
+      // Accuracy: prefer GST-reported error when fresh; otherwise estimate from HDOP.
+      // RTK Fixed(4)≈2cm base error, Float(5)≈0.3m, DGPS(2)≈1m, autonomous(1)≈3m per HDOP unit.
+      const base = st.fixQuality === 4 ? 0.02 : st.fixQuality === 5 ? 0.3 : st.fixQuality === 2 ? 1.0 : 3.0;
+      const accuracy = st.gstAccuracy != null && (Date.now() - (st.gstAt || 0)) < 5000
+        ? st.gstAccuracy
+        : Math.round(base * (isFinite(st.hdop) ? Math.max(st.hdop, 0.6) : 1) * 100) / 100;
+      this.onFix({ coords: {
+        latitude: lat, longitude: lng,
+        altitude: isFinite(st.alt) ? st.alt : null,
+        accuracy,
+        heading: st.heading, speed: st.speed,
+      }, timestamp: Date.now(), _external: true });
+      this.updateGNSSBadge();
+    } else if (type === 'GST') {
+      // $..GST,time,rms,semiMajor,semiMinor,orient,latErr,lonErr,altErr
+      const latErr = parseFloat(parts[6]), lonErr = parseFloat(parts[7]);
+      if (isFinite(latErr) && isFinite(lonErr)) { st.gstAccuracy = Math.round(Math.sqrt(latErr * latErr + lonErr * lonErr) * 100) / 100; st.gstAt = Date.now(); }
+    } else if (type === 'RMC') {
+      // $..RMC,time,status,lat,NS,lon,EW,speedKnots,course,...
+      const spd = parseFloat(parts[7]), crs = parseFloat(parts[8]);
+      st.speed = isFinite(spd) ? spd * 0.514444 : st.speed; // knots -> m/s
+      st.heading = isFinite(crs) ? crs : st.heading;
+    } else if (type === 'VTG') {
+      // $..VTG,courseTrue,T,courseMag,M,speedKnots,N,speedKmh,K
+      const crs = parseFloat(parts[1]), kmh = parseFloat(parts[7]);
+      st.heading = isFinite(crs) ? crs : st.heading;
+      st.speed = isFinite(kmh) ? kmh / 3.6 : st.speed;
+    }
+  },
+
+  gnssFixLabel() {
+    const q = this._gnssState ? this._gnssState.fixQuality : 0;
+    return q === 4 ? 'RTK FIXED' : q === 5 ? 'RTK FLOAT' : q === 2 ? 'DGPS' : q === 1 ? 'GPS' : q === 0 ? 'NO FIX' : 'Q' + q;
+  },
+  updateGNSSBadge() {
+    const el = document.getElementById('gnssBadge');
+    if (!el) return;
+    if (!this._gnssActive) { el.style.display = 'none'; return; }
+    const q = this._gnssState.fixQuality;
+    el.style.display = 'inline-flex';
+    el.textContent = '⛯ ' + this.gnssFixLabel();
+    el.className = 'gnss-badge ' + (q === 4 ? 'rtk-fixed' : q === 5 ? 'rtk-float' : q >= 1 ? 'gps' : 'nofix');
+  },
+
+  openGNSSSheet() {
+    const supported = this.gnssSupported();
+    const connected = !!this._gnssActive;
+    const st = this._gnssState || {};
+    const body = `
+      <div class="note" style="margin-bottom:12px">Pair an external <b>RTK/GNSS receiver</b> over Bluetooth for sub-metre to centimetre accuracy. The receiver's corrected positions replace the phone GPS everywhere — manual capture, streaming capture and route tracking.</div>
+      ${!supported ? `<div class="card"><div class="card-lbl" style="color:var(--red)">Not available in this browser</div><div class="muted">Web Bluetooth works on <b>Chrome for Android</b> and desktop Chrome/Edge. It is not supported in Safari on iPhone/iPad — on those devices the app uses the phone's own GPS.</div></div>` : connected ? `
+      <div class="card"><div class="card-lbl">Connected · ${esc((this._gnssDevice && this._gnssDevice.name) || 'GNSS receiver')}</div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px">
+          <div><div class="muted">Fix type</div><div style="font-size:19px;font-weight:750">${this.gnssFixLabel()}</div></div>
+          <div><div class="muted">Est. accuracy</div><div style="font-size:19px;font-weight:750">${st.gstAccuracy != null ? '±' + st.gstAccuracy + ' m' : (this.state.lastFix && this.state.lastFix.accuracy != null ? '±' + this.state.lastFix.accuracy + ' m' : '—')}</div></div>
+          <div><div class="muted">HDOP</div><div style="font-weight:700">${isFinite(st.hdop) ? st.hdop : '—'}</div></div>
+          <div><div class="muted">Altitude</div><div style="font-weight:700">${isFinite(st.alt) ? st.alt.toFixed(2) + ' m' : '—'}</div></div>
+        </div>
+        <div class="note" style="margin-top:11px">RTK FIXED = centimetre accuracy. RTK FLOAT = decimetre. DGPS/GPS = the receiver has no correction stream — check its NTRIP/base-station link.</div>
+      </div>
+      <button class="btn btn-danger btn-block" id="gnssDisc">${icon('x', 16)} Disconnect receiver</button>` : `
+      <button class="btn btn-primary btn-block btn-lg" id="gnssConn">${icon('navigation', 17)} Pair Bluetooth GNSS receiver</button>
+      <div class="muted" style="margin-top:10px">Supported: receivers exposing a Bluetooth LE serial (Nordic UART) NMEA stream — common on survey GNSS units. Make sure the receiver is on and in Bluetooth LE mode.</div>`}
+    `;
+    this.openSheet('External GNSS receiver', body);
+    const c = document.getElementById('gnssConn'); if (c) c.onclick = async () => { await this.connectGNSS(); this.openGNSSSheet(); };
+    const d = document.getElementById('gnssDisc'); if (d) d.onclick = () => { this.disconnectGNSS(); this.openGNSSSheet(); };
   },
 });
 

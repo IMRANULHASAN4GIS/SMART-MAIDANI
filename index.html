@@ -26,7 +26,7 @@
     <!-- Drop-pin animation shown at the exact tapped coordinate -->
     <div class="drop-pin-layer" id="dropPinLayer"></div>
 
-    <div class="gps-pill" id="gpsPill"><span class="d" id="gpsDot"></span><span id="gpsAccTxt">±— m</span><span class="hdg" id="gpsHdgWrap" style="display:none"><svg viewBox="0 0 24 24" id="gpsHdgArrow" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg><span id="gpsSpeedTxt"></span></span></div>
+    <div class="gps-pill" id="gpsPill"><span class="d" id="gpsDot"></span><span id="gpsAccTxt">±— m</span><span class="gnss-badge" id="gnssBadge" style="display:none"></span><span class="hdg" id="gpsHdgWrap" style="display:none"><svg viewBox="0 0 24 24" id="gpsHdgArrow" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg><span id="gpsSpeedTxt"></span></span></div>
 
     <!-- Contextual guidance banner: tells the user the next step -->
     <div class="guide-banner" id="guideBanner">
@@ -154,6 +154,21 @@
         <div class="d" id="camErrorMsg">Allow camera access in your browser to take photos.</div>
         <button class="btn btn-primary" id="camRetry">Try again</button>
         <button class="btn-text" id="camUseFile">Upload a file instead</button>
+      </div>
+    </div>
+
+    <div class="camera-view" id="scanView" style="display:none">
+      <video id="scanVideo" autoplay playsinline muted></video>
+      <div class="scan-frame"></div>
+      <div class="cam-top">
+        <button class="cam-icon-btn" id="scanClose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+      </div>
+      <div class="scan-status" id="scanStatus">Point the camera at a barcode or QR code</div>
+      <div class="cam-error" id="scanError" style="display:none">
+        <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/><path d="M2 2l20 20" stroke="#E14B3B"/></svg>
+        <div class="t">Scanning unavailable</div>
+        <div class="d" id="scanErrorMsg">Barcode scanning isn't supported in this browser. Type the value manually.</div>
+        <button class="btn-text" id="scanCloseBtn2">Close</button>
       </div>
     </div>
   </div>
