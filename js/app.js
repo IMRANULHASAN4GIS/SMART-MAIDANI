@@ -1465,7 +1465,8 @@ Object.assign(App, {
         ${this.geoReadout(d)}
       </div>
       <div class="card"><div class="card-lbl">${esc(l.name)} attributes</div>
-        ${l.fields.length === 0 ? '<div class="muted">This layer has no custom fields. Add some via Layers → edit.</div>' : l.fields.map((f) => this.fieldHTML(f, d.data[f.key], d.data)).join('')}
+        ${l.template ? `<div class="note" style="margin-bottom:10px">Template feature class — ${l.fields.filter((f) => this.isAutoMapped(f)).length} field(s) fill automatically (coordinates, surveyor, date…).</div>` : ''}
+        ${l.fields.length === 0 ? '<div class="muted">This layer has no custom fields. Add some via Layers → edit.</div>' : l.fields.filter((f) => !this.isAutoMapped(f)).map((f) => this.fieldHTML(f, d.data[f.key], d.data)).join('')}
       </div>
       <div class="card"><div class="card-lbl">Photos & video ${icon('camera', 12, 'display:inline;vertical-align:-2px')}</div>
         <div style="display:flex;gap:8px;margin-bottom:${(d.media || []).length ? 11 : 0}px">
@@ -1508,12 +1509,20 @@ Object.assign(App, {
   fieldHTML(f, val, data) {
     const v = val ?? '', req = f.required ? '<span class="req">*</span>' : '';
     let ctl = '';
-    if (f.type === 'select') ctl = `<select class="sel" data-f="${f.key}"><option value="">Select…</option>${(f.options || []).map((o) => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+    const dom = f.domain && this.state.project && this.state.project.domains ? this.state.project.domains[f.domain] : null;
+    if (dom && dom.values.length > 8) {
+      const label = (dom.values.find((x) => String(x[0]) === String(v)) || [null, v])[1] || '';
+      ctl = `<button type="button" class="inp domain-btn" data-dombtn="${f.key}" data-domname="${esc(f.domain)}">${label ? esc(label) : '<span class="ph">Select…</span>'}</button>`;
+    } else if (dom) {
+      ctl = `<select class="sel" data-f="${f.key}"><option value="">Select…</option>${dom.values.map(([c, n]) => `<option value="${esc(c)}" ${String(c) === String(v) ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>`;
+    } else if (f.type === 'select') ctl = `<select class="sel" data-f="${f.key}"><option value="">Select…</option>${(f.options || []).map((o) => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
     else if (f.type === 'bool') ctl = `<div class="seg" data-f="${f.key}"><button type="button" class="${v === 'Yes' ? 'on' : ''}" data-v="Yes">Yes</button><button type="button" class="${v === 'No' ? 'on' : ''}" data-v="No">No</button></div>`;
     else if (f.type === 'number') ctl = `<input class="inp" type="number" inputmode="decimal" data-f="${f.key}" value="${esc(v)}" />`;
+    else if (f.type === 'integer') ctl = `<input class="inp" type="number" step="1" inputmode="numeric" data-f="${f.key}" value="${esc(v)}" />`;
+    else if (f.type === 'datetime') ctl = `<input class="inp" type="datetime-local" data-f="${f.key}" value="${esc(v)}" />`;
     else if (f.type === 'date') ctl = `<input class="inp" type="date" data-f="${f.key}" value="${esc(v)}" />`;
     else if (f.type === 'time') ctl = `<input class="inp" type="time" data-f="${f.key}" value="${esc(v)}" />`;
-    else ctl = `<div class="text-with-scan"><input class="inp" type="text" data-f="${f.key}" value="${esc(v)}" /><button type="button" class="mini scan-btn" data-scan="${f.key}" title="Scan barcode/QR">${icon('camera', 15)}</button></div>`;
+    else ctl = `<div class="text-with-scan"><input class="inp" type="text" data-f="${f.key}" value="${esc(v)}"${f.length ? ` maxlength="${f.length}"` : ''} /><button type="button" class="mini scan-btn" data-scan="${f.key}" title="Scan barcode/QR">${icon('camera', 15)}</button></div>`;
     const condAttr = f.condition ? ` data-cond-field="${esc(f.condition.field)}" data-cond-op="${esc(f.condition.op)}" data-cond-val="${esc(f.condition.value)}"` : '';
     const hidden = f.condition && data && !this.fieldVisible(f, data) ? ' style="display:none"' : '';
     return `<div class="field" data-fieldwrap="${f.key}"${condAttr}${hidden}><label class="lbl">${esc(f.label)} ${req}</label>${ctl}</div>`;
@@ -1540,6 +1549,7 @@ Object.assign(App, {
     });
     applyConditions(); sync();
     document.querySelectorAll('[data-scan]').forEach((btn) => btn.onclick = () => this.openScanner(btn.dataset.scan));
+    document.querySelectorAll('[data-dombtn]').forEach((btn) => btn.onclick = () => this.openDomainPicker(btn.dataset.dombtn, btn.dataset.domname));
     const gp = document.getElementById('gpsPoint'); if (gp) gp.onclick = () => this.captureGPS();
     const tm = document.getElementById('tapMap'); if (tm) tm.onclick = () => this.beginPlacePoint();
     const dm = document.getElementById('drawMap'); if (dm) dm.onclick = () => this.beginDraw(l.geomType);
@@ -2077,6 +2087,7 @@ Object.assign(App, {
   async saveRecord(status) {
     const d = this.state.draft, l = d._layer;
     if (status === 'completed' && !d.geometry) { this.toast(`Geometry is required — capture the ${l.geomType} on the map`, 'err'); return; }
+    if (l.template) this.applyTemplateAutofill(d, l);
     // carry Z into point geometry coordinates for true 3D output
     if (d.geometry && d.geometry.type === 'Point' && d.location && d.location.z != null) d.geometry.coordinates[2] = d.location.z;
     const rec = { id: d.id || uid('rec'), projectId: this.state.project.id, layerId: l.id, layerName: l.name, geomType: l.geomType, data: d.data, geometry: d.geometry, location: d.location, media: (d.media || []), surveyor: d.surveyor, role: d.role, status, createdAt: d.createdAt || nowISO(), updatedAt: nowISO() };
@@ -2176,7 +2187,7 @@ Object.assign(App, {
       <div class="card"><div class="card-lbl">Default Field Route · ${this.routeStats().pointCount} GPS points</div><button class="btn btn-ghost btn-block" id="exRoute">${icon('navigation', 16)} Download Route GeoJSON · ${this.routeDistanceText(this.routeStats().distanceM)} · ${this.routeDurationText(this.routeStats().durationS)}</button></div>
       <div class="card"><div class="card-lbl">Complete package</div><button class="btn btn-primary btn-block" id="exZip">${icon('package', 16)} Build ZIP (data + media + report)</button>
         <div class="muted" style="margin-top:8px">Includes GeoJSON, KML, CSV, self-contained Shapefile media bundle, clickable Excel media bundle, field route and README. Geometry carries Z.</div></div>
-      <div class="card"><div class="card-lbl">Share</div><div style="display:flex;gap:8px"><button class="btn btn-ghost flex" id="exShare">${icon('share', 16)} Device share</button><button class="btn btn-ghost flex" id="exMail">${icon('mail', 16)} Email</button></div></div>`;
+      <div class="card"><div class="card-lbl">Share</div><div style="display:flex;gap:8px"><button class="btn btn-ghost flex" id="exShare">${icon('share', 16)} Device share</button>${proj.template ? `<button class="btn btn-primary btn-block" id="exOffice" style="margin-bottom:8px">${icon('stack', 16)} Office package — per-feature-class GeoJSON (${esc(proj.template.name.split('_Templates')[0])})</button><div class="muted" style="margin-bottom:10px">Columns match the geodatabase exactly, domain CODES, EPSG from the template. Avoid Shapefile for template layers — long field names would truncate.</div>` : ''}<button class="btn btn-ghost flex" id="exMail">${icon('mail', 16)} Email</button></div></div>`;
     this.openSheet(`Export · ${this.state.project.name}`, body);
     document.getElementById('exLayerSel').onchange = (e) => { this._exLayer = e.target.value; this.openExport(); };
     const proj = this.state.project, safe = proj.name.replace(/\s+/g, '_');
@@ -2212,6 +2223,13 @@ Object.assign(App, {
       btn.innerHTML = `${icon('package', 16)} Build ZIP (data + media + report)`;
     };
     document.getElementById('exShare').onclick = async () => { const s = recsFor(); if (!s.length) return; const gj = JSON.stringify(reproj(Exporter.toGeoJSON(s)), null, 2); const file = new File([gj], `${safe}.geojson`, { type: 'application/geo+json' }); if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: proj.name }); } catch {} } else if (navigator.share) { try { await navigator.share({ title: proj.name, text: `${s.length} records` }); } catch {} } else this.toast('Sharing not supported — use download', 'err'); };
+    const exTplBtn = document.getElementById('exOffice');
+    if (exTplBtn) exTplBtn.onclick = async () => {
+      exTplBtn.disabled = true; const prev = exTplBtn.innerHTML; exTplBtn.innerHTML = `${icon('refresh', 16)} Building…`;
+      try { const blob = await this.buildOfficePackage(); downloadBlob(`${safe}_OFFICE_${(proj.template && proj.template.name || 'template')}.zip`, blob, 'application/zip'); this.toast('Office package downloaded — load with the GDB toolbox', 'ok'); }
+      catch (e) { this.toast('Office export failed: ' + e.message, 'err'); }
+      exTplBtn.innerHTML = prev; exTplBtn.disabled = false;
+    };
     document.getElementById('exMail').onclick = async () => {
       const s = recsFor(); if (!s.length) { this.toast('No records to send', 'err'); return; }
       const btn = document.getElementById('exMail'); const prev = btn.innerHTML; btn.innerHTML = `${icon('refresh', 16, 'display:inline-block')} Preparing…`; btn.disabled = true;
@@ -2316,9 +2334,11 @@ Object.assign(App, {
   projectStartChoice() {
     const body = `
       <div class="note" style="margin-bottom:14px"><b>${esc(this.state.project.name)}</b> is ready. How do you want to start?</div>
+      <div class="tpl" id="wTemplate"><div class="ic">${icon('stack', 21)}</div><div class="tx"><div class="t">Import Schema (Template)</div><div class="d">Load a municipal Template Pack (.smtp.json) — all feature classes, fields and dropdown domains, ready to collect</div></div><div class="chev">${icon('chevron', 18)}</div></div>
       <div class="tpl" id="wImport"><div class="ic">${icon('upload', 21)}</div><div class="tx"><div class="t">Import existing GIS data</div><div class="d">GeoJSON, Shapefile (.zip) or KML — layers & fields are created automatically</div></div><div class="chev">${icon('chevron', 18)}</div></div>
       <div class="tpl" id="wScratch"><div class="ic">${icon('plus', 21)}</div><div class="tx"><div class="t">Start from scratch</div><div class="d">Create your first Asset Type and define its fields</div></div><div class="chev">${icon('chevron', 18)}</div></div>`;
     this.openSheet('Set up your project', body);
+    document.getElementById('wTemplate').onclick = () => this.navTo(this.openTemplateImport);
     document.getElementById('wImport').onclick = () => this.navTo(this.openImport);
     document.getElementById('wScratch').onclick = () => this.navTo(this.layerEditor, [null]);
   },
@@ -3070,6 +3090,257 @@ Object.assign(App, {
     this.openSheet('External GNSS receiver', body);
     const c = document.getElementById('gnssConn'); if (c) c.onclick = async () => { await this.connectGNSS(); this.openGNSSSheet(); };
     const d = document.getElementById('gnssDisc'); if (d) d.onclick = () => { this.disconnectGNSS(); this.openGNSSSheet(); };
+  },
+});
+
+/* ============================================================
+   Part 11 — Template System (municipal schema packs)
+   Import a Smart Maidani Template Pack (.smtp.json, produced by the
+   SmartMaidani.pyt geoprocessing tool from the office .gdb): creates
+   schema-locked feature classes with domain dropdowns, auto-field
+   mapping, entry-time validation, and an office round-trip export
+   whose columns match the geodatabase exactly.
+   ============================================================ */
+Object.assign(App, {
+  // Auto-map suggestions: template field name -> app value source
+  AUTOMAP_SUGGEST: {
+    XCOORD: 'east', X_COORD: 'east', EASTING: 'east',
+    YCOORD: 'north', Y_COORD: 'north', NORTHING: 'north',
+    ZCOORD: 'z', Z_VALUE: 'z', Z_LEVEL: 'z', ELEVATION: 'z',
+    INSPECTED_BY: 'surveyor', SURVEYOR: 'surveyor', COLLECTOR: 'surveyor', CREATED_USER: 'surveyor',
+    INSPECTION_DATE: 'date', SURVEY_DATE: 'date', CREATED_DATE: 'date',
+    ASSET_IMAGE: 'photo', PHOTO_URL: 'photo', IMAGE_URL: 'photo',
+    DATA_SOURCE: 'gps_const', DATASOURCE: 'gps_const',
+  },
+  AUTOMAP_LABELS: { east: 'Easting (project CRS)', north: 'Northing (project CRS)', z: 'Z elevation', surveyor: 'Surveyor name', date: 'Capture date', photo: 'Photo file name (at export)', gps_const: 'Constant "GPS"', none: "Don't auto-fill" },
+
+  isAutoMapped(f) {
+    const am = this.state.project && this.state.project.autoMap;
+    return !!(am && am[f.key.toUpperCase()] && am[f.key.toUpperCase()] !== 'none');
+  },
+
+  /* ---------- import flow ---------- */
+  openTemplateImport() {
+    const body = `
+      <div class="note" style="margin-bottom:12px">Load a <b>Template Pack</b> (.smtp.json) produced by your GIS office from the master geodatabase. Every feature class arrives with its exact fields, dropdown domains and coordinate system — the surveyor only collects.</div>
+      <input type="file" id="tplFile" accept=".json,application/json" hidden />
+      <button class="btn btn-primary btn-block btn-lg" id="tplBtn">${icon('upload', 17)} Choose Template Pack file</button>
+      <div id="tplStatus" class="muted" style="margin-top:12px"></div>`;
+    this.openSheet('Import Schema (Template)', body);
+    const file = document.getElementById('tplFile');
+    document.getElementById('tplBtn').onclick = () => file.click();
+    file.onchange = async (e) => {
+      const f = e.target.files[0]; e.target.value = '';
+      if (!f) return;
+      const status = document.getElementById('tplStatus');
+      status.textContent = 'Reading ' + f.name + '…';
+      try {
+        const pack = JSON.parse(await f.text());
+        if (pack.format !== 'smart-maidani-template-pack' || !Array.isArray(pack.layers)) throw new Error('not a Smart Maidani Template Pack');
+        this.templateActivationSheet(pack);
+      } catch (err) { status.textContent = ''; this.toast('Template import failed: ' + (err.message || 'unreadable file'), 'err'); }
+    };
+  },
+
+  templateActivationSheet(pack) {
+    const proj = this.state.project;
+    const existing = new Set(this.state.layers.filter((l) => l.projectId === proj.id && l.template).map((l) => l.name));
+    const upgrade = proj.template && proj.template.name === pack.name;
+    const rows = pack.layers.map((L, i) => `
+      <label class="tpl-fc-row"><input type="checkbox" data-tfc="${i}" ${existing.has(L.name) ? 'checked disabled' : ''} />
+        <span class="n">${esc(L.name)}</span><span class="d">${L.geomType} · ${L.fields.length} fields${L.dataset ? ' · ' + esc(L.dataset) : ''}${existing.has(L.name) ? ' · already active' : ''}</span></label>`).join('');
+    const body = `
+      <div class="note" style="margin-bottom:10px"><b>${esc(pack.name)}</b> — ${pack.layers.length} feature classes, ${Object.keys(pack.domains || {}).length} domains, EPSG:${pack.crs && pack.crs.epsg}${upgrade ? '<br><b>Existing template detected — this will upgrade domains and field definitions in place.</b>' : ''}</div>
+      <input class="inp" id="tplSearch" placeholder="Search feature classes…" style="margin-bottom:9px" />
+      <div style="display:flex;gap:8px;margin-bottom:9px"><button class="btn-text" id="tplAll">Select all</button><button class="btn-text" id="tplNone">Select none</button></div>
+      <div class="tpl-fc-list" id="tplList">${rows}</div>`;
+    this.openSheet('Choose feature classes to survey', body, `<button class="btn btn-primary btn-block" id="tplGo">${icon('check', 17)} Activate & continue</button>`);
+    const list = document.getElementById('tplList');
+    document.getElementById('tplSearch').oninput = (e) => {
+      const q = e.target.value.toLowerCase();
+      list.querySelectorAll('.tpl-fc-row').forEach((r) => r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none');
+    };
+    document.getElementById('tplAll').onclick = () => list.querySelectorAll('input:not(:disabled)').forEach((c) => { if (c.parentElement.style.display !== 'none') c.checked = true; });
+    document.getElementById('tplNone').onclick = () => list.querySelectorAll('input:not(:disabled)').forEach((c) => c.checked = false);
+    document.getElementById('tplGo').onclick = () => {
+      const picked = [...list.querySelectorAll('input:checked:not(:disabled)')].map((c) => pack.layers[parseInt(c.dataset.tfc)]);
+      if (!picked.length && !upgrade) { this.toast('Tick at least one feature class', 'err'); return; }
+      this.applyTemplatePack(pack, picked);
+    };
+  },
+
+  packFieldToLayerField(pf) {
+    return { id: uid('f'), key: pf.name, label: pf.alias || pf.name, type: pf.type || 'text',
+             length: pf.length || null, required: pf.nullable === false, domain: pf.domain || null,
+             default: pf.default != null ? pf.default : null, template: true };
+  },
+
+  async applyTemplatePack(pack, pickedLayers) {
+    const proj = this.state.project;
+    const upgrade = proj.template && proj.template.name === pack.name;
+    proj.template = { name: pack.name, sourceGdb: pack.sourceGdb, generated: pack.generated, epsg: pack.crs && pack.crs.epsg };
+    proj.domains = pack.domains || {};
+    if (pack.crs && pack.crs.epsg) { proj.crsCode = 'EPSG:' + pack.crs.epsg; proj.crsName = 'EPSG:' + pack.crs.epsg + ' (template)'; }
+    // upgrade existing template layers' field definitions in place
+    let upgraded = 0;
+    if (upgrade) {
+      for (const l of this.state.layers.filter((x) => x.projectId === proj.id && x.template)) {
+        const def = pack.layers.find((p) => p.name === l.name);
+        if (def) { l.fields = def.fields.map((pf) => this.packFieldToLayerField(pf)); l.hasZ = !!def.hasZ; await DB.put('layers', l); upgraded++; }
+      }
+    }
+    // create newly picked layers
+    let created = 0;
+    for (const def of pickedLayers) {
+      const l = { id: uid('lyr'), projectId: proj.id, name: def.name, dataset: def.dataset || '',
+                  geomType: def.geomType, hasZ: !!def.hasZ, template: true, sourceGeometry: def.sourceGeometry || '',
+                  fields: def.fields.map((pf) => this.packFieldToLayerField(pf)),
+                  symbology: this.defaultSymb(def.geomType, this.nextLayerColor()), createdAt: nowISO() };
+      await DB.put('layers', l);
+      this.state.layers.push(l);
+      created++;
+    }
+    await DB.put('projects', proj);
+    this.renderAllLayers(); this.refreshBarSub();
+    document.getElementById('barProj').textContent = `${proj.name} · ${pack.name.split('_Templates')[0]}`;
+    this.toast(`Template applied: ${created} feature class(es) activated${upgraded ? `, ${upgraded} upgraded` : ''}`, 'ok');
+    this.templateAutoMapSheet(pack);
+  },
+
+  /* ---------- auto-field mapping (user confirms once per template) ---------- */
+  templateAutoMapSheet(pack) {
+    const proj = this.state.project;
+    const activeLayers = this.state.layers.filter((l) => l.projectId === proj.id && l.template);
+    const fieldNames = new Set();
+    activeLayers.forEach((l) => l.fields.forEach((f) => { if (this.AUTOMAP_SUGGEST[f.key.toUpperCase()]) fieldNames.add(f.key); }));
+    if (!fieldNames.size) { proj.autoMap = proj.autoMap || {}; DB.put('projects', proj); this.rootNav(this.templateReadySheet); return; }
+    const current = proj.autoMap || {};
+    const rows = [...fieldNames].sort().map((fn) => {
+      const sel = current[fn.toUpperCase()] || this.AUTOMAP_SUGGEST[fn.toUpperCase()];
+      return `<div class="field"><label class="lbl">${esc(fn)}</label>
+        <select class="sel" data-amap="${esc(fn.toUpperCase())}">${Object.entries(this.AUTOMAP_LABELS).map(([k, v]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${v}</option>`).join('')}</select></div>`;
+    }).join('');
+    const body = `<div class="note" style="margin-bottom:12px">These template fields can be <b>filled automatically</b> at capture — coordinates in the template CRS, surveyor, dates, photo names. Confirm the mapping (pre-suggested by field name); mapped fields disappear from the form so the surveyor never types them.</div>${rows}`;
+    this.openSheet('Automatic field mapping', body, `<button class="btn btn-primary btn-block" id="amapSave">${icon('check', 17)} Confirm mapping</button>`);
+    document.getElementById('amapSave').onclick = async () => {
+      const am = {};
+      document.querySelectorAll('[data-amap]').forEach((el) => { am[el.dataset.amap] = el.value; });
+      proj.autoMap = am;
+      await DB.put('projects', proj);
+      this.rootNav(this.templateReadySheet);
+    };
+  },
+
+  templateReadySheet() {
+    const proj = this.state.project;
+    const n = this.state.layers.filter((l) => l.projectId === proj.id && l.template).length;
+    const body = `<div class="note" style="margin-bottom:14px"><b>${n} feature class(es) ready.</b> Schema, dropdown domains and validation are active — collection only from here.</div>
+      <div class="tpl" id="trCollect"><div class="ic">${icon('point', 21)}</div><div class="tx"><div class="t">Start collecting</div><div class="d">Pick a feature class and capture</div></div><div class="chev">${icon('chevron', 18)}</div></div>`;
+    this.openSheet('Template ready', body);
+    document.getElementById('trCollect').onclick = () => this.rootNav(this.startCollect);
+  },
+
+  /* ---------- autofill at save ---------- */
+  applyTemplateAutofill(d, l) {
+    const proj = this.state.project, am = proj.autoMap || {};
+    const loc = d.location || {};
+    let en = null;
+    if (loc.lat != null && typeof Geo !== 'undefined') { try { en = Geo.project([loc.lng, loc.lat], proj.crsCode); } catch {} }
+    const pad = (n) => String(n).padStart(2, '0');
+    const now = new Date();
+    for (const f of l.fields) {
+      const src = am[f.key.toUpperCase()];
+      if (!src || src === 'none') continue;
+      let v = null;
+      if (src === 'east' && en) v = Math.round(en[0] * 1000) / 1000;
+      else if (src === 'north' && en) v = Math.round(en[1] * 1000) / 1000;
+      else if (src === 'z' && loc.z != null) v = loc.z;
+      else if (src === 'surveyor') v = this.state.user.name;
+      else if (src === 'date') v = f.type === 'datetime' ? `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}` : `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+      else if (src === 'gps_const') v = 'GPS';
+      // 'photo' resolves at export (file name isn't final until the package is built)
+      if (v != null) d.data[f.key] = v;
+    }
+    // defaults for untouched fields
+    for (const f of l.fields) if (d.data[f.key] == null && f.default != null) d.data[f.key] = f.default;
+  },
+
+  /* ---------- searchable domain picker ---------- */
+  openDomainPicker(fieldKey, domainName) {
+    const dom = this.state.project.domains && this.state.project.domains[domainName];
+    if (!dom) return;
+    const ov = document.getElementById('domainPicker');
+    document.getElementById('dpTitle').textContent = domainName;
+    const list = document.getElementById('dpList');
+    const render = (q) => {
+      const ql = (q || '').toLowerCase();
+      list.innerHTML = dom.values.filter(([c, n]) => !ql || n.toLowerCase().includes(ql) || String(c).toLowerCase().includes(ql))
+        .map(([c, n]) => `<div class="dp-item" data-code="${esc(String(c))}">${esc(n)}${String(c) !== String(n) ? `<span class="cd">${esc(String(c))}</span>` : ''}</div>`).join('') || '<div class="muted" style="padding:10px">No matches</div>';
+      list.querySelectorAll('.dp-item').forEach((el) => el.onclick = () => this.pickDomainValue(fieldKey, domainName, el.dataset.code));
+    };
+    document.getElementById('dpSearch').value = '';
+    document.getElementById('dpSearch').oninput = (e) => render(e.target.value);
+    document.getElementById('dpClose').onclick = () => { ov.style.display = 'none'; };
+    render('');
+    ov.style.display = 'flex';
+    setTimeout(() => document.getElementById('dpSearch').focus(), 150);
+  },
+  pickDomainValue(fieldKey, domainName, code) {
+    document.getElementById('domainPicker').style.display = 'none';
+    const d = this.state.draft; if (!d) return;
+    d.data[fieldKey] = code;
+    const dom = this.state.project.domains[domainName];
+    const label = (dom.values.find((x) => String(x[0]) === String(code)) || [null, code])[1];
+    const btn = document.querySelector(`[data-dombtn="${fieldKey}"]`);
+    if (btn) btn.innerHTML = esc(label);
+    // revalidate + conditions
+    const l = d._layer;
+    document.querySelectorAll('[data-fieldwrap]').forEach((wrap) => { const f = l.fields.find((x) => x.key === wrap.dataset.fieldwrap); if (f && f.condition) wrap.style.display = this.fieldVisible(f, d.data) ? '' : 'none'; });
+    const b = document.getElementById('fDone');
+    if (b) { const m = l.fields.filter((f) => f.required && !this.isAutoMapped(f) && !d.data[f.key] && this.fieldVisible(f, d.data)); b.disabled = m.length > 0; }
+  },
+
+  /* ---------- office round-trip export ---------- */
+  async buildOfficePackage() {
+    const proj = this.state.project;
+    const zip = new JSZip();
+    const layers = this.state.layers.filter((l) => l.projectId === proj.id && l.template);
+    const crsCode = proj.crsCode || 'EPSG:4326';
+    let total = 0;
+    const projPt = (c) => { try { const p = Geo.project([c[0], c[1]], crsCode); return c.length > 2 ? [p[0], p[1], c[2]] : [p[0], p[1]]; } catch { return c; } };
+    const projGeom = (g) => {
+      if (!g) return null;
+      if (g.type === 'Point') return { type: 'Point', coordinates: projPt(g.coordinates) };
+      if (g.type === 'LineString') return { type: 'LineString', coordinates: g.coordinates.map(projPt) };
+      if (g.type === 'Polygon') return { type: 'Polygon', coordinates: g.coordinates.map((ring) => ring.map(projPt)) };
+      return g;
+    };
+    for (const l of layers) {
+      const recs = this.state.records.filter((r) => r.layerId === l.id && r.status === 'completed' && r.geometry);
+      if (!recs.length) continue;
+      const feats = recs.map((r) => {
+        const props = {};
+        for (const f of l.fields) {
+          let v = r.data ? r.data[f.key] : null;
+          if ((v == null || v === '') && (proj.autoMap || {})[f.key.toUpperCase()] === 'photo') {
+            const ph = (r.media || []).find((m) => (m.kind || m.type) === 'photo');
+            v = ph ? (ph.name || ph.id + '.jpg') : null;
+          }
+          props[f.key] = v != null && v !== '' ? v : null;
+        }
+        return { type: 'Feature', properties: props, geometry: projGeom(r.geometry) };
+      });
+      zip.file(`${l.name}.geojson`, JSON.stringify({ type: 'FeatureCollection', name: l.name,
+        crs: { type: 'name', properties: { name: 'urn:ogc:def:crs:' + crsCode.replace(':', '::') } }, features: feats }, null, 1));
+      total += feats.length;
+    }
+    if (!total) throw new Error('no completed template records to export');
+    zip.file('README_OFFICE.txt', `${proj.name} — office round-trip export
+Template: ${proj.template.name} (${proj.template.sourceGdb || ''}, generated ${proj.template.generated || ''})
+CRS: ${crsCode}. One GeoJSON per feature class; columns match the geodatabase exactly; domain values are CODES.
+Load with the "Field Data To GDB" geoprocessing tool (SmartMaidani.pyt), one file per target feature class.
+NOTE: do not convert these to Shapefile — field names over 10 characters would be truncated.`);
+    return zip.generateAsync({ type: 'blob' });
   },
 });
 

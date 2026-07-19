@@ -1,14 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <!-- Google tag (gtag.js) -->
-  <script async src="https://www.googletagmanager.com/gtag/js?id=G-R6VYE6CH3G"></script>
-  <script>
-    window.dataLayer = window.dataLayer || [];
-    function gtag(){dataLayer.push(arguments);}
-    gtag('js', new Date());
-    gtag('config', 'G-R6VYE6CH3G');
-  </script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#0079C1" />
@@ -165,6 +157,13 @@
       </div>
     </div>
 
+    <div class="domain-picker" id="domainPicker" style="display:none">
+      <div class="dp-card">
+        <div class="dp-head"><div class="dp-title" id="dpTitle">Domain</div><button class="mini" id="dpClose"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+        <input class="inp" id="dpSearch" placeholder="Search values…" />
+        <div class="dp-list" id="dpList"></div>
+      </div>
+    </div>
     <div class="camera-view" id="scanView" style="display:none">
       <video id="scanVideo" autoplay playsinline muted></video>
       <div class="scan-frame"></div>

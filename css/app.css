@@ -624,3 +624,22 @@ input[type="checkbox"] { accent-color: var(--esri-blue); }
 .gnss-badge.rtk-float { background: #fff3d1; color: #8a6400; }
 .gnss-badge.gps { background: #e2ecf5; color: #16537e; }
 .gnss-badge.nofix { background: #fde2de; color: #a3271a; }
+
+/* ---------- Template system ---------- */
+.tpl-fc-list { max-height: 46vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; }
+.tpl-fc-row { display: flex; align-items: center; gap: 9px; padding: 9px 11px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.tpl-fc-row:last-child { border-bottom: none; }
+.tpl-fc-row input { width: 17px; height: 17px; accent-color: var(--esri-blue); flex: 0 0 auto; }
+.tpl-fc-row .n { font-weight: 700; font-size: 13px; }
+.tpl-fc-row .d { font-size: 11px; color: var(--grey-600); margin-left: auto; text-align: right; }
+.domain-btn { text-align: left; cursor: pointer; }
+.domain-btn .ph { color: var(--grey-500); }
+.domain-picker { position: fixed; inset: 0; z-index: 260; background: rgba(15,25,35,.45); display: flex; align-items: flex-end; justify-content: center; }
+.dp-card { background: var(--white); width: 100%; max-width: 560px; border-radius: 16px 16px 0 0; padding: 14px 14px calc(14px + env(safe-area-inset-bottom)); max-height: 78vh; display: flex; flex-direction: column; gap: 10px; }
+.dp-head { display: flex; align-items: center; justify-content: space-between; }
+.dp-title { font-weight: 800; font-size: 15px; }
+.dp-list { overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; }
+.dp-item { padding: 11px 12px; border-bottom: 1px solid var(--line); font-size: 14px; cursor: pointer; display: flex; justify-content: space-between; gap: 8px; }
+.dp-item:last-child { border-bottom: none; }
+.dp-item:active { background: var(--esri-blue-tint); }
+.dp-item .cd { color: var(--grey-500); font-size: 11px; align-self: center; }
