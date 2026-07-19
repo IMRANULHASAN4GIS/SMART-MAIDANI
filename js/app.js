@@ -1455,6 +1455,7 @@ Object.assign(App, {
 
   openForm() {
     const d = this.state.draft, l = d._layer;
+    if (l.template) this.seedTemplateDefaults(d, l);
     const missing = l.fields.filter((f) => f.required && !d.data[f.key] && this.fieldVisible(f, d.data));
     const geomBtns = l.geomType === 'point'
       ? `<button class="btn btn-primary flex" id="gpsPoint">${icon('navigation', 16)} Use GPS</button><button class="btn btn-ghost flex" id="tapMap">${icon('mapPin', 16)} Tap map</button>`
@@ -1465,7 +1466,7 @@ Object.assign(App, {
         ${this.geoReadout(d)}
       </div>
       <div class="card"><div class="card-lbl">${esc(l.name)} attributes</div>
-        ${l.template ? `<div class="note" style="margin-bottom:10px">Template feature class — ${l.fields.filter((f) => this.isAutoMapped(f)).length} field(s) fill automatically (coordinates, surveyor, date…).</div>` : ''}
+        ${l.template ? `<div class="note" style="margin-bottom:10px">Template feature class — ${l.fields.filter((f) => this.isAutoMapped(f)).length} field(s) fill automatically; GDB-required fields arrive pre-defaulted (change only what you observe on site).</div><input class="inp" id="fldSearch" placeholder="Search fields…" style="margin-bottom:10px" autocomplete="off" />` : ''}
         ${l.fields.length === 0 ? '<div class="muted">This layer has no custom fields. Add some via Layers → edit.</div>' : l.fields.filter((f) => !this.isAutoMapped(f)).map((f) => this.fieldHTML(f, d.data[f.key], d.data)).join('')}
       </div>
       <div class="card"><div class="card-lbl">Photos & video ${icon('camera', 12, 'display:inline;vertical-align:-2px')}</div>
@@ -1550,6 +1551,16 @@ Object.assign(App, {
     applyConditions(); sync();
     document.querySelectorAll('[data-scan]').forEach((btn) => btn.onclick = () => this.openScanner(btn.dataset.scan));
     document.querySelectorAll('[data-dombtn]').forEach((btn) => btn.onclick = () => this.openDomainPicker(btn.dataset.dombtn, btn.dataset.domname));
+    const fs = document.getElementById('fldSearch');
+    if (fs) fs.oninput = () => {
+      const q = fs.value.toLowerCase();
+      document.querySelectorAll('[data-fieldwrap]').forEach((wrap) => {
+        const f = l.fields.find((x) => x.key === wrap.dataset.fieldwrap);
+        const hit = !q || wrap.dataset.fieldwrap.toLowerCase().includes(q) || (f && f.label.toLowerCase().includes(q));
+        const condVisible = !f || !f.condition || this.fieldVisible(f, d.data);
+        wrap.style.display = hit && condVisible ? '' : 'none';
+      });
+    };
     const gp = document.getElementById('gpsPoint'); if (gp) gp.onclick = () => this.captureGPS();
     const tm = document.getElementById('tapMap'); if (tm) tm.onclick = () => this.beginPlacePoint();
     const dm = document.getElementById('drawMap'); if (dm) dm.onclick = () => this.beginDraw(l.geomType);
@@ -3170,9 +3181,43 @@ Object.assign(App, {
   },
 
   packFieldToLayerField(pf) {
+    // Non-nullable in the GDB is an OFFICE constraint, not a surveyor duty: it is
+    // satisfied by pre-filled defaults (below), never by blocking the field crew.
     return { id: uid('f'), key: pf.name, label: pf.alias || pf.name, type: pf.type || 'text',
-             length: pf.length || null, required: pf.nullable === false, domain: pf.domain || null,
+             length: pf.length || null, required: false, gdbRequired: pf.nullable === false,
+             domain: pf.domain || null,
              default: pf.default != null ? pf.default : null, template: true };
+  },
+
+  // Smart default for a non-nullable template field with no authored default:
+  // domain -> N/A-style code if the domain has one; text -> 'N/A'; numbers -> 0;
+  // dates -> the capture moment. Surveyor can change any of them; office can refine.
+  templateSmartDefault(f) {
+    if (f.default != null && f.default !== '') return f.default;
+    if (!f.gdbRequired) return null;
+    const dom = f.domain && this.state.project.domains ? this.state.project.domains[f.domain] : null;
+    if (dom) {
+      const prefer = ['N/A', 'NA', 'Undefined', 'UNDEFINED', 'Unknown', 'Other'];
+      for (const p of prefer) { const hit = dom.values.find(([c]) => String(c) === p); if (hit) return hit[0]; }
+      return dom.values.length ? dom.values[0][0] : null;
+    }
+    if (f.type === 'number' || f.type === 'integer') return 0;
+    if (f.type === 'datetime' || f.type === 'date') {
+      const n = new Date(), pad = (x) => String(x).padStart(2, '0');
+      const d = `${n.getFullYear()}-${pad(n.getMonth() + 1)}-${pad(n.getDate())}`;
+      return f.type === 'datetime' ? `${d}T${pad(n.getHours())}:${pad(n.getMinutes())}` : d;
+    }
+    const v = 'N/A';
+    return f.length && f.length < 3 ? v.slice(0, f.length) : v;
+  },
+
+  seedTemplateDefaults(d, l) {
+    for (const f of l.fields) {
+      if (d.data[f.key] == null || d.data[f.key] === '') {
+        const v = this.templateSmartDefault(f);
+        if (v != null) d.data[f.key] = v;
+      }
+    }
   },
 
   async applyTemplatePack(pack, pickedLayers) {

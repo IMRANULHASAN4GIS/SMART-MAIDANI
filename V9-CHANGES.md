@@ -47,3 +47,15 @@ definitions of existing layers in place — no duplication (verified idempotent)
 
 Service worker cache v18. Companion deliverable: SmartMaidani-Converter-Tools.zip
 (two-way geoprocessing toolbox + four ready-made AAM packs).
+
+## V9.1 — field-crew usability fix (non-nullable handling)
+- GDB non-nullable fields NEVER block the surveyor: "required" now lives only
+  as metadata (gdbRequired). Complete is always available on template layers.
+- Non-nullable fields arrive PRE-DEFAULTED and visible in the form: authored
+  default if the template has one; otherwise domain fields get an N/A-style
+  code (N/A / Undefined / Unknown / Other, else first value), text gets "N/A",
+  numbers get 0, dates get the capture date. The surveyor changes only what
+  they actually observe on site; the office refines the rest.
+- New field SEARCH box at the top of template capture forms — type to filter
+  66-field forms down to the fields being edited (e.g. "cover" -> 9 fields).
+- SW cache v19.
