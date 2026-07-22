@@ -1,4 +1,4 @@
-# Smart Maidani ArcMap-style geometry editor
+# EasyCapture ArcMap-style geometry editor
 
 ## Interaction model
 

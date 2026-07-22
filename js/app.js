@@ -1,5 +1,5 @@
 /* ============================================================
-   Smart Maidani — field GIS data collection
+   EasyCapture — field GIS data collection
    Feature-class model · user-defined layers & attributes
    Symbology · coordinate systems (proj4) · auto Z-elevation
    ============================================================ */
@@ -43,7 +43,7 @@ const App = {
     const body = `
       <div style="text-align:center;padding:8px 4px 4px">
         <div class="brand-logo-lg">${LOGO(64)}</div>
-        <h1 class="welcome-title">Smart Maidani</h1>
+        <h1 class="welcome-title">EasyCapture</h1>
         <p class="welcome-sub">Field GIS data collection — build your own layers, capture anywhere, export for GIS.</p>
       </div>
       <div class="field"><label class="lbl">Your name <span class="req">*</span></label><input class="inp" id="regName" placeholder="Enter Your Name" /></div>
@@ -2159,7 +2159,7 @@ Object.assign(App, {
       <div class="tpl" id="mGnss"><div class="ic">${icon('target', 21)}</div><div class="tx"><div class="t">External GNSS receiver</div><div class="d">${this._gnssActive ? 'Connected · ' + this.gnssFixLabel() : 'Pair an RTK receiver for cm accuracy'}</div></div><div class="chev">${icon('chevron', 18)}</div></div>
       ${this.state.project ? `<div class="card" style="margin-top:6px"><div class="card-lbl">${icon('globe', 12, 'display:inline;vertical-align:-2px')} Project coordinate system</div><div style="font-family:var(--mono);font-size:12.5px">${esc(this.state.project.crsName)} · ${esc(this.state.project.crsCode)}</div></div>` : ''}
       <button class="btn btn-danger btn-block" id="mWipe">${icon('trash', 16)} Erase all local data</button>
-      <div class="muted" style="text-align:center;margin-top:14px">Smart Maidani · offline-first field GIS</div>`;
+      <div class="muted" style="text-align:center;margin-top:14px">EasyCapture · offline-first field GIS</div>`;
     this.openSheet('Menu', body);
     document.getElementById('editUser').onclick = () => this.showWelcome();
     document.getElementById('mProjects').onclick = () => this.navTo(this.openProjectPicker);
@@ -2251,12 +2251,12 @@ Object.assign(App, {
         const blob = await Exporter.buildZipPackage(s, proj, route.features.length ? route : null, { layers: this.state.layers.filter((l) => l.projectId === proj.id) });
         const file = new File([blob], `${safe}_Package.zip`, { type: 'application/zip' });
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
-          await navigator.share({ files: [file], title: `Smart Maidani export — ${proj.name}`, text: `${s.length} record(s) from "${proj.name}". Package includes GeoJSON, KML, Shapefile, CSV, Excel and media.` });
+          await navigator.share({ files: [file], title: `EasyCapture export — ${proj.name}`, text: `${s.length} record(s) from "${proj.name}". Package includes GeoJSON, KML, Shapefile, CSV, Excel and media.` });
         } else {
           // Desktop / unsupported browser: download the ZIP, then open a pre-filled email.
           downloadBlob(`${safe}_Package.zip`, blob, 'application/zip');
           this.toast('ZIP downloaded — attach it to the email that opens', 'ok');
-          setTimeout(() => { window.location.href = `mailto:?subject=${encodeURIComponent('Smart Maidani export — ' + proj.name)}&body=${encodeURIComponent(`${s.length} record(s) from "${proj.name}". The package ZIP was just downloaded — please attach it.`)}`; }, 600);
+          setTimeout(() => { window.location.href = `mailto:?subject=${encodeURIComponent('EasyCapture export — ' + proj.name)}&body=${encodeURIComponent(`${s.length} record(s) from "${proj.name}". The package ZIP was just downloaded — please attach it.`)}`; }, 600);
         }
       } catch (e) { if (e && e.name !== 'AbortError') this.toast('Could not prepare the email package', 'err'); }
       btn.innerHTML = prev; btn.disabled = false;
@@ -3106,8 +3106,8 @@ Object.assign(App, {
 
 /* ============================================================
    Part 11 — Template System (municipal schema packs)
-   Import a Smart Maidani Template Pack (.smtp.json, produced by the
-   SmartMaidani.pyt geoprocessing tool from the office .gdb): creates
+   Import an EasyCapture Template Pack (.smtp.json, produced by the
+   EasyCapture.pyt geoprocessing tool from the office .gdb): creates
    schema-locked feature classes with domain dropdowns, auto-field
    mapping, entry-time validation, and an office round-trip export
    whose columns match the geodatabase exactly.
@@ -3147,7 +3147,8 @@ Object.assign(App, {
       status.textContent = 'Reading ' + f.name + '…';
       try {
         const pack = JSON.parse(await f.text());
-        if (pack.format !== 'smart-maidani-template-pack' || !Array.isArray(pack.layers)) throw new Error('not a Smart Maidani Template Pack');
+        const supportedTemplateFormats = ['easycapture-template-pack', 'smart-maidani-template-pack'];
+        if (!supportedTemplateFormats.includes(pack.format) || !Array.isArray(pack.layers)) throw new Error('not an EasyCapture Template Pack');
         this.templateActivationSheet(pack);
       } catch (err) { status.textContent = ''; this.toast('Template import failed: ' + (err.message || 'unreadable file'), 'err'); }
     };
@@ -3383,7 +3384,7 @@ Object.assign(App, {
     zip.file('README_OFFICE.txt', `${proj.name} — office round-trip export
 Template: ${proj.template.name} (${proj.template.sourceGdb || ''}, generated ${proj.template.generated || ''})
 CRS: ${crsCode}. One GeoJSON per feature class; columns match the geodatabase exactly; domain values are CODES.
-Load with the "Field Data To GDB" geoprocessing tool (SmartMaidani.pyt), one file per target feature class.
+Load with the "Field Data To GDB" geoprocessing tool (EasyCapture.pyt), one file per target feature class.
 NOTE: do not convert these to Shapefile — field names over 10 characters would be truncated.`);
     return zip.generateAsync({ type: 'blob' });
   },

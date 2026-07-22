@@ -1,4 +1,4 @@
-# Smart Maidani V8
+# EasyCapture V8
 
 Five capability upgrades, closing the main gaps identified against ArcGIS Field
 Maps, Fulcrum and QField. All existing flows re-verified: 4 automated suites

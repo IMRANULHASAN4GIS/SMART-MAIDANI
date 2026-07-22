@@ -1,9 +1,10 @@
 /* ============================================================
-   Smart Maidani — IndexedDB persistence
+   EasyCapture — IndexedDB persistence
    Stores: user, projects, layers (feature classes), records, media, settings
    Offline-first. All geometry stored WGS84; reprojected on display/export.
    ============================================================ */
 const DB = (() => {
+  // Retain the legacy database identifier so existing offline records remain available.
   const NAME = 'smartmaidani';
   const VERSION = 1;
   let db = null;

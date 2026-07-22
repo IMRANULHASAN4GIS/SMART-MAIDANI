@@ -633,7 +633,7 @@ ${rows || '<p>No media in this export.</p>'}</body></html>`;
     zip.file('gallery.html', buildGalleryHtml(records, project));
 
     zip.file('README.txt',
-`${project.name} — Smart Maidani export
+`${project.name} — EasyCapture export
 Generated: ${nowISO()}
 Records: ${records.length}
 

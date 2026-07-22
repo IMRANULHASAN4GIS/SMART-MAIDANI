@@ -1,4 +1,4 @@
-# Smart Maidani V9 — Template System (municipal schema round-trip)
+# EasyCapture V9 — Template System (municipal schema round-trip)
 
 The professional workflow: office authors the schema once, the surveyor
 imports it once and only collects, data returns fitting the geodatabase
@@ -7,7 +7,7 @@ classes, 84 domains, EPSG:32640). All 5 automated suites pass (125+ checks).
 
 ## Import Schema (Template) — new project-start path
 Project setup now offers "Import Schema (Template)" alongside Import Data and
-From Scratch. Load a Template Pack (.smtp.json, produced by the SmartMaidani.pyt
+From Scratch. Load a Template Pack (.smtp.json, produced by the EasyCapture.pyt
 geoprocessing toolbox from the office .gdb): searchable feature-class picker
 (tick today's classes), then automatic-field mapping confirmation, then
 "Start collecting". Project CRS switches to the template's EPSG automatically
@@ -45,7 +45,7 @@ layers (10-char name truncation).
 Re-importing a newer pack of the same template upgrades domains and field
 definitions of existing layers in place — no duplication (verified idempotent).
 
-Service worker cache v18. Companion deliverable: SmartMaidani-Converter-Tools.zip
+Service worker cache v18. Companion deliverable: EasyCapture-Converter-Tools.zip
 (two-way geoprocessing toolbox + four ready-made AAM packs).
 
 ## V9.1 — field-crew usability fix (non-nullable handling)

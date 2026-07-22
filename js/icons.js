@@ -57,7 +57,7 @@ function icon(name, size, extraStyle) {
   return `<svg viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"${extraStyle ? ` style="${extraStyle}"` : ''}>${p}</svg>`;
 }
 
-/* Smart Maidani logo — a stylized field/map marker with layers */
+/* EasyCapture logo — a stylized field/map marker with layers */
 function LOGO(size) {
   const s = size || 32;
   return `<svg viewBox="0 0 48 48" width="${s}" height="${s}" fill="none" xmlns="http://www.w3.org/2000/svg">

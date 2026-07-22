@@ -1,8 +1,8 @@
-# Smart Maidani
+# EasyCapture
 
 **Field GIS data collection — build your own layers, capture anywhere, export for GIS.**
 
-Smart Maidani is an offline-first Progressive Web App (PWA) modeled on the Esri Field Maps experience. The map fills the whole screen; forms and lists slide over it. Surveyors register once, create their own **Asset Types**, define the attributes for each, then collect points, lines and polygons that all flow into the correct feature class. Every feature gets an auto-filled **Z-Elevation**, coordinates in the **coordinate system you choose**, geotagged photos and video, and one-tap export to GeoJSON, KML, Shapefile, CSV, Excel, PDF or a full ZIP.
+EasyCapture is an offline-first Progressive Web App (PWA) modeled on the Esri Field Maps experience. The map fills the whole screen; forms and lists slide over it. Surveyors register once, create their own **Asset Types**, define the attributes for each, then collect points, lines and polygons that all flow into the correct feature class. Every feature gets an auto-filled **Z-Elevation**, coordinates in the **coordinate system you choose**, geotagged photos and video, and one-tap export to GeoJSON, KML, Shapefile, CSV, Excel, PDF or a full ZIP.
 
 No build step. No framework. No backend required. Static files you host on GitHub Pages.
 
@@ -61,13 +61,13 @@ HTTPS (which Pages provides) is required for GPS, camera, install, and the eleva
 ## Project structure
 
 ```
-smart-maidani/
+easycapture/
 ├── index.html
 ├── manifest.webmanifest
 ├── sw.js
 ├── css/app.css
 ├── js/
-│   ├── icons.js     Icon set + Smart Maidani logo
+│   ├── icons.js     Icon set + EasyCapture logo
 │   ├── db.js        IndexedDB (user, projects, layers, records, media)
 │   ├── geo.js       Coordinate systems (proj4) + elevation service
 │   ├── export.js    GeoJSON / KML / CSV / Shapefile / ZIP engine
@@ -89,4 +89,4 @@ MIT — see [LICENSE](LICENSE).
 
 ---
 
-Smart Maidani — built for the field.
+EasyCapture — built for the field.

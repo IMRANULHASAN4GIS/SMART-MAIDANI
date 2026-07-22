@@ -1,4 +1,4 @@
-# Smart Maidani V7
+# EasyCapture V7
 
 ## Streaming Capture — new project type
 A third project type alongside Standard (from scratch / import): **Streaming Capture**.

@@ -1,5 +1,5 @@
 /* ============================================================
-   Smart Maidani — Geodesy: coordinate systems + elevation
+   EasyCapture — Geodesy: coordinate systems + elevation
    - Internal storage is always WGS84 lng/lat (EPSG:4326)
    - proj4 reprojects for display and export
    - Z auto-filled from Open-Meteo elevation API (free, no key)

@@ -1,5 +1,5 @@
 /* ============================================================
-   Smart Maidani — Field Maps–style GIS data collection
+   EasyCapture — Field Maps–style GIS data collection
    Full-screen map · floating controls · slide-over panels
    Esri blue / clean white
    ============================================================ */
@@ -423,7 +423,7 @@ svg { display: block; }
 .leaflet-bar { border: none !important; box-shadow: var(--sh-2); }
 
 /* ============================================================
-   Smart Maidani additions — welcome, layers, symbology, import
+   EasyCapture additions — welcome, layers, symbology, import
    ============================================================ */
 .brand-logo-lg { display: flex; justify-content: center; margin-bottom: 14px; }
 .welcome-title { font-size: 26px; font-weight: 750; letter-spacing: -0.5px; color: var(--ink); }

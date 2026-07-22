@@ -1,4 +1,4 @@
-# Smart Maidani V6
+# EasyCapture V6
 
 ## V6.1 — Field-robustness hardening (final test pass)
 

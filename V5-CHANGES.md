@@ -1,4 +1,4 @@
-# Smart Maidani V5
+# EasyCapture V5
 
 ## ArcMap-style geometry editing
 

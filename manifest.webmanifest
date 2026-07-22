@@ -1,6 +1,6 @@
 {
-  "name": "Smart Maidani \u2014 Field GIS Collection",
-  "short_name": "Smart Maidani",
+  "name": "EasyCapture \u2014 Field GIS Collection",
+  "short_name": "EasyCapture",
   "description": "Field GIS data collection: build feature-class layers, define attributes, capture point/line/polygon with auto Z-elevation, symbolize, pick coordinate systems, export GeoJSON/KML/Shapefile/CSV.",
   "start_url": "./index.html",
   "scope": "./",
