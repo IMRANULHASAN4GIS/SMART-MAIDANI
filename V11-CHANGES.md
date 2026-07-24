@@ -7,7 +7,7 @@ data-protection and guided-editing recommendations from the technical review.
 
 - New EasyCapture GIS artwork for the welcome screen, header, PWA installation
   icon, maskable icon and Apple touch icon.
-- V22 cache generation and cache-busted application files so deployed updates
+- V23 cache generation and cache-busted application files so deployed updates
   replace the previous interface and branding.
 - Safer IndexedDB transactions and complete ZIP backup/restore, including binary
   attachments.
@@ -29,6 +29,8 @@ data-protection and guided-editing recommendations from the technical review.
 - Configurable vertex/endpoint and edge snapping with tolerance and target-layer
   controls.
 - Bulk attribute update for selected records in the same layer.
+- Export-screen initialization repaired so GeoJSON, KML, Shapefile, CSV, Excel,
+  PDF, route and complete-package actions can be opened normally.
 
 ## Specialist desktop-GIS capabilities still planned
 

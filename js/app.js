@@ -2416,7 +2416,7 @@ Object.assign(App, {
     this.openSheet('Offline readiness', '<div class="note">Checking application files, storage and offline capabilities…</div>');
     const required = [
       './index.html', './css/app.css?v=22', './js/icons.js?v=22', './js/db.js?v=22',
-      './js/geo.js?v=22', './js/export.js?v=22', './js/app.js?v=22',
+      './js/geo.js?v=23', './js/export.js?v=23', './js/app.js?v=23',
     ];
     let cached = 0;
     if ('caches' in window) {
@@ -2580,6 +2580,8 @@ Object.assign(App, {
   /* ---------- Export ---------- */
   openExport() {
     if (!this.state.project) { this.toast('Select a project first', 'err'); return; }
+    const proj = this.state.project;
+    const safe = proj.name.replace(/\s+/g, '_');
     const layers = this.state.layers.filter((l) => l.projectId === this.state.project.id);
     this._exLayer = this._exLayer || 'all';
     const recsFor = () => { let rs = this.state.records.filter((r) => r.projectId === this.state.project.id); if (this._exLayer !== 'all') rs = rs.filter((r) => r.layerId === this._exLayer); return rs; };
@@ -2601,7 +2603,6 @@ Object.assign(App, {
       <div class="card"><div class="card-lbl">Share</div><div style="display:flex;gap:8px"><button class="btn btn-ghost flex" id="exShare">${icon('share', 16)} Device share</button>${proj.template ? `<button class="btn btn-primary btn-block" id="exOffice" style="margin-bottom:8px">${icon('stack', 16)} Office package — per-feature-class GeoJSON (${esc(proj.template.name.split('_Templates')[0])})</button><div class="muted" style="margin-bottom:10px">Columns match the geodatabase exactly, domain CODES, EPSG from the template. Avoid Shapefile for template layers — long field names would truncate.</div>` : ''}<button class="btn btn-ghost flex" id="exMail">${icon('mail', 16)} Email</button></div></div>`;
     this.openSheet(`Export · ${this.state.project.name}`, body);
     document.getElementById('exLayerSel').onchange = (e) => { this._exLayer = e.target.value; this.openExport(); };
-    const proj = this.state.project, safe = proj.name.replace(/\s+/g, '_');
     const reproj = (gj) => this.reprojectGeoJSON(gj, proj.crsCode);
     document.querySelectorAll('[data-ex]').forEach((b) => b.onclick = async () => {
       const s = recsFor(); if (!s.length) { this.toast('No records to export', 'err'); return; }

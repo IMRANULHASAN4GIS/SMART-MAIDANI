@@ -1,18 +1,18 @@
 /* EasyCapture service worker — v22
    Strategy: network-first for app files (updates deploy immediately, cache is offline fallback);
    cache-first for CDN libraries and map tiles. */
-const CACHE = 'easycapture-v22';
+const CACHE = 'easycapture-v23';
 const TILE_CACHE = 'easycapture-tiles-v1';
 const TILE_LIMIT = 1500;
 const CORE = [
   './',
   './index.html',
-  './css/app.css?v=22',
-  './js/icons.js?v=22',
-  './js/db.js?v=22',
-  './js/geo.js?v=22',
-  './js/export.js?v=22',
-  './js/app.js?v=22',
+  './css/app.css?v=23',
+  './js/icons.js?v=23',
+  './js/db.js?v=23',
+  './js/geo.js?v=23',
+  './js/export.js?v=23',
+  './js/app.js?v=23',
   './manifest.webmanifest',
   './icons/apple-touch-icon-180.png',
   './icons/icon-192.png',
