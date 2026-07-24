@@ -57,17 +57,10 @@ function icon(name, size, extraStyle) {
   return `<svg viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"${extraStyle ? ` style="${extraStyle}"` : ''}>${p}</svg>`;
 }
 
-/* EasyCapture logo — a stylized field/map marker with layers */
+/* EasyCapture logo — shared raster brand used by the PWA and in-app UI. */
 function LOGO(size) {
   const s = size || 32;
-  return `<svg viewBox="0 0 48 48" width="${s}" height="${s}" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <rect width="48" height="48" rx="11" fill="url(#smg)"/>
-    <path d="M24 10 L37 17 L24 24 L11 17 Z" fill="#fff" fill-opacity="0.95"/>
-    <path d="M11 24 L24 31 L37 24" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.75"/>
-    <path d="M11 31 L24 38 L37 31" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.5"/>
-    <circle cx="24" cy="17" r="3" fill="#0079C1"/>
-    <defs><linearGradient id="smg" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse"><stop stop-color="#00A0B0"/><stop offset="1" stop-color="#0079C1"/></linearGradient></defs>
-  </svg>`;
+  return `<img src="icons/icon-192.png" width="${s}" height="${s}" alt="" class="easycapture-logo-img" draggable="false" />`;
 }
 
 /* Esri-style teardrop map pin — used for the drop-placement marker.

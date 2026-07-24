@@ -29,19 +29,66 @@ const DB = (() => {
         if (!d.objectStoreNames.contains('media')) d.createObjectStore('media', { keyPath: 'id' });
         if (!d.objectStoreNames.contains('settings')) d.createObjectStore('settings', { keyPath: 'key' });
       };
-      req.onsuccess = (e) => { db = e.target.result; resolve(db); };
+      req.onsuccess = (e) => {
+        db = e.target.result;
+        db.onversionchange = () => { db.close(); db = null; };
+        resolve(db);
+      };
       req.onerror = (e) => reject(e.target.error);
+      req.onblocked = () => reject(new Error('EasyCapture storage upgrade is blocked by another open tab. Close other EasyCapture tabs and retry.'));
     });
   }
   const tx = (store, mode) => open().then((d) => d.transaction(store, mode).objectStore(store));
 
   return {
-    async put(store, obj) { const s = await tx(store, 'readwrite'); return new Promise((res, rej) => { const r = s.put(obj); r.onsuccess = () => res(obj); r.onerror = () => rej(r.error); }); },
+    async put(store, obj) {
+      const d = await open();
+      return new Promise((res, rej) => {
+        const t = d.transaction(store, 'readwrite');
+        t.objectStore(store).put(obj);
+        t.oncomplete = () => res(obj);
+        t.onerror = () => rej(t.error || new Error(`Could not save ${store}`));
+        t.onabort = () => rej(t.error || new Error(`Saving ${store} was cancelled`));
+      });
+    },
     async get(store, key) { const s = await tx(store, 'readonly'); return new Promise((res, rej) => { const r = s.get(key); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
     async all(store) { const s = await tx(store, 'readonly'); return new Promise((res, rej) => { const r = s.getAll(); r.onsuccess = () => res(r.result || []); r.onerror = () => rej(r.error); }); },
     async byIndex(store, index, value) { const s = await tx(store, 'readonly'); return new Promise((res, rej) => { const r = s.index(index).getAll(value); r.onsuccess = () => res(r.result || []); r.onerror = () => rej(r.error); }); },
-    async del(store, key) { const s = await tx(store, 'readwrite'); return new Promise((res, rej) => { const r = s.delete(key); r.onsuccess = () => res(); r.onerror = () => rej(r.error); }); },
-    async clear(store) { const s = await tx(store, 'readwrite'); return new Promise((res, rej) => { const r = s.clear(); r.onsuccess = () => res(); r.onerror = () => rej(r.error); }); },
+    async del(store, key) {
+      const d = await open();
+      return new Promise((res, rej) => {
+        const t = d.transaction(store, 'readwrite');
+        t.objectStore(store).delete(key);
+        t.oncomplete = () => res();
+        t.onerror = () => rej(t.error || new Error(`Could not delete from ${store}`));
+        t.onabort = () => rej(t.error || new Error(`Deleting from ${store} was cancelled`));
+      });
+    },
+    async clear(store) {
+      const d = await open();
+      return new Promise((res, rej) => {
+        const t = d.transaction(store, 'readwrite');
+        t.objectStore(store).clear();
+        t.oncomplete = () => res();
+        t.onerror = () => rej(t.error || new Error(`Could not clear ${store}`));
+        t.onabort = () => rej(t.error || new Error(`Clearing ${store} was cancelled`));
+      });
+    },
+    async replaceAll(snapshot) {
+      const d = await open();
+      const stores = ['user', 'projects', 'layers', 'records', 'media', 'settings'];
+      return new Promise((res, rej) => {
+        const t = d.transaction(stores, 'readwrite');
+        for (const name of stores) {
+          const s = t.objectStore(name);
+          s.clear();
+          for (const row of (snapshot[name] || [])) s.put(row);
+        }
+        t.oncomplete = () => res();
+        t.onerror = () => rej(t.error || new Error('Backup restore failed'));
+        t.onabort = () => rej(t.error || new Error('Backup restore was cancelled'));
+      });
+    },
   };
 })();
 

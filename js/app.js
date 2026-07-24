@@ -19,6 +19,10 @@ const App = {
     editingSession: false,
     sessionUndo: [], sessionRedo: [],
     snapping: true,
+    snapVertices: true,
+    snapEdges: true,
+    snapTolerance: 14,
+    snapLayerIds: null,
     route: { points: [], distanceM: 0, paused: false },
   },
 
@@ -42,7 +46,7 @@ const App = {
   showWelcome() {
     const body = `
       <div style="text-align:center;padding:8px 4px 4px">
-        <div class="brand-logo-lg">${LOGO(64)}</div>
+        <div class="brand-logo-lg">${LOGO(96)}</div>
         <h1 class="welcome-title">EasyCapture</h1>
         <p class="welcome-sub">Field GIS data collection — build your own layers, capture anywhere, export for GIS.</p>
       </div>
@@ -75,7 +79,7 @@ const App = {
      ============================================================ */
   buildMap() {
     if (typeof L === 'undefined') {
-      document.getElementById('map').innerHTML = `<div class="map-msg"><div><div class="t">Map needs one online load</div><div class="d">Connect to the internet once and reopen — the map then works offline afterward.</div></div></div>`;
+      document.getElementById('map').innerHTML = `<div class="map-msg"><div><div class="t">Map library is not available</div><div class="d">Connect once to initialize the application. Offline basemaps include only areas and zoom levels already cached on this device.</div></div></div>`;
       return;
     }
     const map = L.map('map', { zoomControl: false, attributionControl: true }).setView([24.4539, 54.3773], 12);
@@ -134,6 +138,7 @@ const App = {
     $('toolSnapping').onclick = () => { this.state.snapping = !this.state.snapping; this.updateEditToolbar(); this.toast(`Snapping ${this.state.snapping ? 'on' : 'off'}`, 'ok'); };
     $('editorMenuBtn').onclick = (e) => { e.stopPropagation(); $('editorMenu').classList.toggle('show'); };
     $('editorStart').onclick = () => this.startEditing();
+    $('editorSnapSettings').onclick = () => this.openSnappingSettings();
     $('editorSave').onclick = () => this.saveEditSession();
     $('editorStop').onclick = () => this.stopEditing();
     document.addEventListener('click', (e) => { const p = $('editorMenu'), b = $('editorMenuBtn'); if (p.classList.contains('show') && !p.contains(e.target) && !b.contains(e.target)) p.classList.remove('show'); });
@@ -148,9 +153,9 @@ const App = {
     $('skRedo').onclick = () => this.geomRedo();
     $('skDeleteVertex').onclick = () => this.deleteActiveVertex();
     $('skFinish').onclick = () => { if (this.state.editGeom) this.confirmEditGeom(); else this.confirmDraw(); };
-    $('sheetClose').onclick = () => this.closeSheet();
-    $('sheetBack').onclick = () => this.goBack();
-    $('scrim').onclick = () => this.closeSheet();
+    $('sheetClose').onclick = () => this.closeSheetByUser();
+    $('sheetBack').onclick = () => this.goBackByUser();
+    $('scrim').onclick = () => this.closeSheetByUser();
     this.wireCameraControls();
     this.wireImagery();
     document.addEventListener('keydown', (e) => {
@@ -224,7 +229,8 @@ const App = {
     const mergeOK = count >= 2 && selectedRecords.every((r) => r.layerId === selectedRecords[0].layerId && r.geomType === selectedRecords[0].geomType);
     document.getElementById('toolMerge').disabled = !editing || !mergeOK;
     del.disabled = !editing || count === 0;
-    document.getElementById('toolAttributes').disabled = !editing || count !== 1;
+    const attrOK = count >= 1 && selectedRecords.every((r) => r.layerId === selectedRecords[0].layerId);
+    document.getElementById('toolAttributes').disabled = !editing || !attrOK;
     document.getElementById('toolSketchProps').disabled = !editing || !(this.state.editGeom && this.state.editGeom.vertexEdit);
     document.getElementById('toolUndo').disabled = !((this.state.editGeom && this.state.editGeom._undo && this.state.editGeom._undo.length) || this.state.sessionUndo.length);
     document.getElementById('toolRedo').disabled = !((this.state.editGeom && this.state.editGeom._redo && this.state.editGeom._redo.length) || this.state.sessionRedo.length);
@@ -251,13 +257,27 @@ const App = {
     if (!this.state.project) { this.toast('Open a project first', 'err'); return; }
     this.state.editingSession = true;
     this.state.sessionUndo = []; this.state.sessionRedo = [];
+    this._pendingMediaDeletes = [];
     this._editSessionBaseline = JSON.parse(JSON.stringify(this.state.records.filter((r) => r.projectId === this.state.project.id)));
     document.getElementById('editorMenu').classList.remove('show');
     this.setActiveTool('select'); this.updateEditToolbar();
     if (!silent) this.toast('Edit session started', 'ok');
   },
-  saveEditSession() {
+  async flushPendingMediaDeletes() {
+    const ids = [...new Set(this._pendingMediaDeletes || [])];
+    for (const id of ids) await Media.remove(id);
+    this._pendingMediaDeletes = [];
+  },
+  queueMediaDelete(id) {
+    if (!id) return;
+    if (this.state.editingSession) {
+      this._pendingMediaDeletes = this._pendingMediaDeletes || [];
+      if (!this._pendingMediaDeletes.includes(id)) this._pendingMediaDeletes.push(id);
+    } else Media.remove(id);
+  },
+  async saveEditSession() {
     if (!this.state.editingSession) return;
+    await this.flushPendingMediaDeletes();
     this._editSessionBaseline = JSON.parse(JSON.stringify(this.state.records.filter((r) => r.projectId === this.state.project.id)));
     this.state.sessionUndo = []; this.state.sessionRedo = [];
     document.getElementById('editorMenu').classList.remove('show');
@@ -278,6 +298,8 @@ const App = {
       for (const r of this._editSessionBaseline) await DB.put('records', r);
       this.state.records = this.state.records.filter((x) => x.projectId !== pid).concat(JSON.parse(JSON.stringify(this._editSessionBaseline)));
     }
+    if (save) await this.flushPendingMediaDeletes();
+    else this._pendingMediaDeletes = [];
     if (this.state.editGeom) this.cancelEditGeom();
     this.state.editingSession = false; this.state.selectedRecord = null; this.state.selectedRecords = [];
     this.closeSheet(); document.getElementById('editorMenu').classList.remove('show');
@@ -328,6 +350,30 @@ const App = {
     this.closeSheet();
     this.guide('Arrow select', 'Click a feature once to select it, or double-click it to edit vertices.', 'Box select', () => this.beginBoxSelection());
   },
+  openSnappingSettings() {
+    const layers = this.state.layers.filter((l) => this.state.project && l.projectId === this.state.project.id);
+    const selected = this.state.snapLayerIds ? new Set(this.state.snapLayerIds) : null;
+    const body = `<div class="note">Choose valid snap targets. Snapping is evaluated in screen pixels so the tolerance remains usable at different map scales.</div>
+      <label class="fld-req"><input type="checkbox" id="snapVertex" ${this.state.snapVertices ? 'checked' : ''} /> vertices and endpoints</label>
+      <label class="fld-req"><input type="checkbox" id="snapEdge" ${this.state.snapEdges ? 'checked' : ''} /> feature edges</label>
+      <div class="field"><label class="lbl">Tolerance</label><select class="sel" id="snapTolerance">${[6,10,14,18,24,30].map((n) => `<option value="${n}" ${n === this.state.snapTolerance ? 'selected' : ''}>${n} pixels</option>`).join('')}</select></div>
+      <div class="card"><div class="card-lbl">Target layers</div>
+        <label class="fld-req"><input type="checkbox" id="snapAll" ${selected ? '' : 'checked'} /> all visible layers</label>
+        <div id="snapLayerList">${layers.map((l) => `<label class="fld-req"><input type="checkbox" data-snap-layer="${l.id}" ${!selected || selected.has(l.id) ? 'checked' : ''} /> ${esc(l.name)}</label>`).join('')}</div>
+      </div>`;
+    this.openSheet('Snapping settings', body, `<button class="btn btn-primary btn-block" id="saveSnapSettings">${icon('check', 16)} Apply snapping settings</button>`);
+    const all = document.getElementById('snapAll');
+    all.onchange = () => document.querySelectorAll('[data-snap-layer]').forEach((c) => { c.disabled = all.checked; if (all.checked) c.checked = true; });
+    all.onchange();
+    document.getElementById('saveSnapSettings').onclick = () => {
+      const vertices = document.getElementById('snapVertex').checked, edges = document.getElementById('snapEdge').checked;
+      if (!vertices && !edges) { this.toast('Enable at least one snap type', 'err'); return; }
+      this.state.snapVertices = vertices; this.state.snapEdges = edges;
+      this.state.snapTolerance = +document.getElementById('snapTolerance').value || 14;
+      this.state.snapLayerIds = all.checked ? null : [...document.querySelectorAll('[data-snap-layer]:checked')].map((c) => c.dataset.snapLayer);
+      this.closeSheet(); this.toast('Snapping settings applied', 'ok');
+    };
+  },
   beginBoxSelection() {
     if (!this.state.project) return;
     this.setActiveTool('box');
@@ -354,6 +400,43 @@ const App = {
     };
     walk(g.coordinates);
     return points.length ? L.latLngBounds(points) : null;
+  },
+  validateGeometry(geometry) {
+    const errors = [];
+    if (!geometry || !geometry.type || !Array.isArray(geometry.coordinates)) return ['Geometry is missing'];
+    const ring = geometry.type === 'Point' ? [geometry.coordinates] : geometry.type === 'Polygon' ? geometry.coordinates[0] : geometry.coordinates;
+    if (!Array.isArray(ring)) return ['Geometry coordinates are invalid'];
+    for (const c of ring) {
+      if (!Array.isArray(c) || !Number.isFinite(+c[0]) || !Number.isFinite(+c[1])) { errors.push('Geometry contains an invalid coordinate'); break; }
+      if (+c[0] < -180 || +c[0] > 180 || +c[1] < -90 || +c[1] > 90) { errors.push('Geometry contains a coordinate outside WGS 84 bounds'); break; }
+    }
+    if (geometry.type === 'LineString' && ring.length < 2) errors.push('A line requires at least two vertices');
+    if (geometry.type === 'Polygon') {
+      if (ring.length < 4) errors.push('A polygon requires at least three vertices and a closed ring');
+      else if (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1]) errors.push('Polygon ring is not closed');
+    }
+    for (let i = 1; i < ring.length; i++) {
+      if (ring[i][0] === ring[i - 1][0] && ring[i][1] === ring[i - 1][1]) { errors.push('Geometry contains a zero-length segment'); break; }
+    }
+    const orient = (a, b, c) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    const intersects = (a, b, c, d) => {
+      const o1 = orient(a, b, c), o2 = orient(a, b, d), o3 = orient(c, d, a), o4 = orient(c, d, b);
+      return ((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) && ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0));
+    };
+    if (geometry.type !== 'Point') {
+      for (let i = 0; i < ring.length - 1; i++) {
+        for (let j = i + 2; j < ring.length - 1; j++) {
+          if (geometry.type === 'Polygon' && i === 0 && j === ring.length - 2) continue;
+          if (intersects(ring[i], ring[i + 1], ring[j], ring[j + 1])) { errors.push('Geometry self-intersects'); i = ring.length; break; }
+        }
+      }
+    }
+    return [...new Set(errors)];
+  },
+  requireValidGeometry(geometry) {
+    const errors = this.validateGeometry(geometry);
+    if (errors.length) { this.toast(errors[0], 'err'); return false; }
+    return true;
   },
   geometryIntersectsBounds(record, bounds) {
     const g = Exporter.geometryOf(record); if (!g) return false;
@@ -485,8 +568,38 @@ const App = {
     this.toast('Line split into two editable features', 'ok');
   },
   openSelectedAttributes() {
+    const selected = this.state.selectedRecords || [];
+    if (selected.length > 1) { this.openBulkAttributes(selected); return; }
     const r = this.state.selectedRecord; if (!r) return;
     this.rootNav(this.startCollect, [r]);
+  },
+  openBulkAttributes(records) {
+    const layer = records.length && this.state.layers.find((l) => l.id === records[0].layerId);
+    if (!layer || !layer.fields.length) { this.toast('This layer has no editable attributes', 'err'); return; }
+    const options = layer.fields.map((f) => `<option value="${esc(f.key)}">${esc(f.label)}</option>`).join('');
+    const body = `<div class="note">Apply one value to ${records.length} selected ${esc(layer.name)} features. Geometry, IDs and system tracking fields are unchanged.</div>
+      <div class="field"><label class="lbl">Field</label><select class="sel" id="bulkField">${options}</select></div>
+      <div class="field"><label class="lbl">Value</label><div id="bulkValueHost"></div></div>`;
+    this.openSheet('Bulk attribute update', body, `<button class="btn btn-primary btn-block" id="bulkApply">${icon('check', 16)} Apply to ${records.length} records</button>`);
+    const render = () => {
+      const f = layer.fields.find((x) => x.key === document.getElementById('bulkField').value);
+      const dom = f && f.domain && this.state.project.domains && this.state.project.domains[f.domain];
+      const host = document.getElementById('bulkValueHost');
+      if (dom) host.innerHTML = `<select class="sel" id="bulkValue"><option value="">Select…</option>${dom.values.map(([c,n]) => `<option value="${esc(c)}">${esc(n)}</option>`).join('')}</select>`;
+      else if (f && f.type === 'select') host.innerHTML = `<select class="sel" id="bulkValue"><option value="">Select…</option>${(f.options || []).map((o) => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}</select>`;
+      else host.innerHTML = `<input class="inp" id="bulkValue" type="${f && ['number','integer'].includes(f.type) ? 'number' : f && f.type === 'date' ? 'date' : 'text'}" />`;
+    };
+    document.getElementById('bulkField').onchange = render; render();
+    document.getElementById('bulkApply').onclick = async () => {
+      const key = document.getElementById('bulkField').value, value = document.getElementById('bulkValue').value;
+      this.captureSessionUndo();
+      for (const r of records) {
+        r.data = r.data || {}; r.data[key] = value; r.updatedAt = nowISO();
+        r.status = this.captureStatus(r.data, layer);
+        await DB.put('records', r);
+      }
+      this.closeSheet(); this.renderAllLayers(); this.updateEditToolbar(); this.toast(`${records.length} records updated`, 'ok');
+    };
   },
   openRotateTool() {
     const r = this.state.selectedRecord; if (!r) return;
@@ -614,7 +727,11 @@ const App = {
       geometry = merged.geometry;
     }
     this.captureSessionUndo(); target.geometry = geometry; target.updatedAt = nowISO(); await DB.put('records', target);
-    const remove = selected.slice(1); for (const r of remove) await DB.del('records', r.id);
+    const remove = selected.slice(1);
+    for (const r of remove) {
+      for (const m of (r.media || [])) if (!m.dataUrl) this.queueMediaDelete(m.id);
+      await DB.del('records', r.id);
+    }
     const ids = new Set(remove.map((r) => r.id)); this.state.records = this.state.records.filter((r) => !ids.has(r.id));
     this.state.selectedRecord = target; this.state.selectedRecords = [target]; this.renderAllLayers(); this.refreshBarSub(); this.updateEditToolbar(); this.toast(`${selected.length} features merged`, 'ok');
   },
@@ -623,7 +740,7 @@ const App = {
     if (!confirm(`Delete ${selected.length} selected feature${selected.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
     this.captureSessionUndo();
     for (const r of selected) {
-      for (const m of (r.media || [])) if (!m.dataUrl) await Media.remove(m.id);
+      for (const m of (r.media || [])) if (!m.dataUrl) this.queueMediaDelete(m.id);
       await DB.del('records', r.id);
     }
     const ids = new Set(selected.map((r) => r.id));
@@ -703,6 +820,7 @@ const App = {
     this.showGPS(fix);
     this.pushTrail(fix);
     if (this._streamActive && !this._streamPaused) this.streamOnFix(fix);
+    if (this._rapidActive) this.rapidOnFix(fix);
     if (!this._hadFirstFix) { this._hadFirstFix = true; this.centerOnFix(true); } // one-time convenience center on first-ever fix
     else if (this.state.follow && this.state.map) this.centerOnFix(false);
   },
@@ -838,6 +956,29 @@ Object.assign(App, {
     this._noClose = !!noClose;
   },
   closeSheet() { if (this._noClose) return; document.getElementById('sheet').classList.remove('show'); document.getElementById('scrim').classList.remove('show'); this._navStack = []; this._current = null; },
+  async closeSheetByUser() {
+    if (this._noClose) return;
+    if (this._rapidLayer) {
+      this._rapidActive = false; this._rapidLayer = null; this._rapidLastFix = null;
+      this.toast('Rapid capture stopped');
+    }
+    const d = this.state.draft;
+    if (d && !this.state.placing && !this.state.draw && !this.state.editGeom) {
+      for (const id of (d._newMediaIds || [])) await Media.remove(id);
+      this.state.draft = null;
+      this.toast(d.id ? 'Changes discarded' : 'Unsaved capture discarded');
+    }
+    this.closeSheet();
+  },
+  async goBackByUser() {
+    const d = this.state.draft;
+    if (d && !this.state.placing && !this.state.draw && !this.state.editGeom) {
+      for (const id of (d._newMediaIds || [])) await Media.remove(id);
+      this.state.draft = null;
+      this.toast(d.id ? 'Changes discarded' : 'Unsaved capture discarded');
+    }
+    this.goBack();
+  },
 
   // Lightweight navigation stack: navTo pushes the current screen so goBack can return to it.
   // rootNav resets the stack — use for screens reached directly from persistent map chrome.
@@ -1072,8 +1213,20 @@ Object.assign(App, {
     document.getElementById('lSave').onclick = async () => {
       l.name = document.getElementById('lName').value.trim();
       if (!l.name) { this.toast('Enter the asset type name', 'err'); return; }
-      // assign ids/labels
-      l.fields = l.fields.filter((f) => f.label.trim()).map((f) => ({ ...f, id: f.id || uid('f'), key: f.label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') }));
+      // Preserve existing field identifiers when labels change. New identifiers are
+      // normalized once, then checked for collisions before any schema is saved.
+      const normalizedFields = l.fields.filter((f) => f.label.trim()).map((f) => ({
+        ...f,
+        id: f.id || uid('f'),
+        key: f.key || f.label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
+      }));
+      const keyCounts = normalizedFields.reduce((m, f) => m.set(f.key, (m.get(f.key) || 0) + 1), new Map());
+      const duplicateKeys = [...keyCounts.entries()].filter(([, count]) => count > 1).map(([key]) => key);
+      if (duplicateKeys.length) {
+        this.toast(`Field names create duplicate key${duplicateKeys.length > 1 ? 's' : ''}: ${duplicateKeys.join(', ')}`, 'err');
+        return;
+      }
+      l.fields = normalizedFields;
       // conditions were recorded against a temp key-or-label; remap to the final generated key
       l.fields.forEach((f) => { if (f.condition && f.condition.field && !l.fields.some((x) => x.key === f.condition.field)) { const match = l.fields.find((x) => x.label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') === f.condition.field || x.label === f.condition.field); if (match) f.condition.field = match.key; else delete f.condition; } });
       await DB.put('layers', l);
@@ -1179,6 +1332,7 @@ Object.assign(App, {
       clearTimeout(this._featureClickTimer);
       if (previous && previous.id === record.id && now - previous.time < 550) {
         this._lastFeatureTap = null;
+        if (!this.state.editingSession) this.startEditing(true);
         this.state.selectedRecord = record; this.state.selectedRecords = [record];
         this.setActiveTool('vertices'); this.startEditGeom(record, featureLayer);
         return;
@@ -1199,6 +1353,7 @@ Object.assign(App, {
       if (L.DomEvent) { L.DomEvent.stopPropagation(e); L.DomEvent.preventDefault(e); }
       if (this.state.placing || this.state.draw || this.state.editGeom || ['box', 'create'].includes(this.state.activeTool)) return;
       clearTimeout(this._featureClickTimer);
+      if (!this.state.editingSession) this.startEditing(true);
       this.state.selectedRecord = record; this.state.selectedRecords = [record];
       this.setActiveTool('vertices');
       this.startEditGeom(record, featureLayer);
@@ -1216,18 +1371,26 @@ Object.assign(App, {
     const layerFilter = this.state.activeLayer;
     let list = this.state.records.filter((r) => r.projectId === pid);
     if (layerFilter) list = list.filter((r) => r.layerId === layerFilter.id);
+    if (this._filter === 'needs_attributes') list = list.filter((r) => r.status === 'needs_attributes');
+    else if (this._filter === 'completed') list = list.filter((r) => r.status === 'completed');
+    else if (this._filter === 'draft') list = list.filter((r) => r.status === 'draft');
     if (this._search && this._search.trim()) { const q = this._search.toLowerCase(); list = list.filter((r) => JSON.stringify(r.data || {}).toLowerCase().includes(q) || (r.layerName || '').toLowerCase().includes(q)); }
     list.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
     const layers = this.state.layers.filter((l) => l.projectId === pid);
+    const incomplete = this.state.records.filter((r) => r.projectId === pid && (!layerFilter || r.layerId === layerFilter.id) && r.status === 'needs_attributes');
     const title = layerFilter ? layerFilter.name : 'All records';
     const body = `
       <div class="tools-row"><div class="search">${icon('search', 16)}<input id="recSearch" placeholder="Search" value="${esc(this._search || '')}" /></div>${layerFilter ? `<button class="btn btn-ghost" id="allLayers">All layers</button>` : ''}</div>
+      <div class="filters">${[['all','All'],['needs_attributes',`Needs attributes (${incomplete.length})`],['completed','Complete'],['draft','Draft']].map(([id, name]) => `<button class="filter ${this._filter === id ? 'on' : ''}" data-status="${id}">${name}</button>`).join('')}</div>
+      ${incomplete.length ? `<button class="btn btn-primary btn-block" id="nextIncomplete" style="margin-bottom:10px">${icon('edit', 16)} Complete next incomplete record</button>` : ''}
       ${!layerFilter && layers.length ? `<div class="filters">${[{ id: null, name: 'All' }].concat(layers).map((l) => `<button class="filter ${(!this._layerChip && !l.id) || this._layerChip === l.id ? 'on' : ''}" data-lc="${l.id || ''}">${esc(l.name)}</button>`).join('')}</div>` : ''}
       ${list.length === 0 ? `<div class="empty">${icon('list', 44)}<p>${this._search ? 'No records match.' : 'No records yet. Tap Collect to add.'}</p></div>` : this.groupedRecRows(list)}`;
     this.openSheet(`${title} · ${this.state.project.name}`, body);
     const srch = document.getElementById('recSearch');
     srch.oninput = (e) => { this._search = e.target.value; this.renderRecords(); setTimeout(() => { const n = document.getElementById('recSearch'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 0); };
     const al = document.getElementById('allLayers'); if (al) al.onclick = () => { this.state.activeLayer = null; this.renderRecords(); };
+    document.querySelectorAll('[data-status]').forEach((el) => el.onclick = () => { this._filter = el.dataset.status; this.renderRecords(); });
+    const ni = document.getElementById('nextIncomplete'); if (ni) ni.onclick = () => this.navTo(this.startCollect, [incomplete[0]]);
     document.querySelectorAll('[data-lc]').forEach((el) => el.onclick = () => { this._layerChip = el.dataset.lc || null; this.state.activeLayer = this._layerChip ? this.state.layers.find((l) => l.id === this._layerChip) : null; this.renderRecords(); });
     document.querySelectorAll('[data-rid]').forEach((el) => el.onclick = () => this.navTo(this.openDetail, [el.dataset.rid]));
   },
@@ -1290,7 +1453,15 @@ Object.assign(App, {
     }
     document.getElementById('dEdit').onclick = () => this.navTo(this.startCollect, [r]);
     let cd = false; const db = document.getElementById('dDel');
-    db.onclick = async () => { if (!cd) { cd = true; db.innerHTML = `${icon('alert', 16)}`; this.toast('Tap again to delete'); return; } for (const m of (r.media || [])) if (!m.dataUrl) await Media.remove(m.id); await DB.del('records', r.id); this.state.records = this.state.records.filter((x) => x.id !== r.id); this.renderAllLayers(); this.refreshBarSub(); this.toast('Record deleted'); this.goBack(); };
+    db.onclick = async () => {
+      if (!cd) { cd = true; db.innerHTML = `${icon('alert', 16)}`; this.toast('Tap again to delete'); return; }
+      if (!this.state.editingSession) this.startEditing(true);
+      this.captureSessionUndo();
+      for (const m of (r.media || [])) if (!m.dataUrl) this.queueMediaDelete(m.id);
+      await DB.del('records', r.id);
+      this.state.records = this.state.records.filter((x) => x.id !== r.id);
+      this.renderAllLayers(); this.refreshBarSub(); this.toast('Record deleted · Save or discard the edit session', 'ok'); this.goBack();
+    };
   },
 
   mediaThumb(m, i, removable) {
@@ -1404,10 +1575,13 @@ Object.assign(App, {
     const min = eg.mode === 'line' ? 2 : 3;
     if (eg.coords.length < min) { this.toast(`Add at least ${min} points`, 'err'); return; }
     this.captureSessionUndo();
-    r.geometry = eg.mode === 'line' ? { type: 'LineString', coordinates: [...eg.coords] } : { type: 'Polygon', coordinates: [[...eg.coords, eg.coords[0]]] };
+    const proposed = eg.mode === 'line' ? { type: 'LineString', coordinates: [...eg.coords] } : { type: 'Polygon', coordinates: [[...eg.coords, eg.coords[0]]] };
+    if (!this.requireValidGeometry(proposed)) return;
+    r.geometry = proposed;
     this.finishEditGeom(r);
   },
   async finishEditGeom(r) {
+    if (!this.requireValidGeometry(r.geometry)) return;
     r.updatedAt = nowISO();
     await DB.put('records', r);
     const i = this.state.records.findIndex((x) => x.id === r.id); if (i >= 0) this.state.records[i] = r;
@@ -1439,7 +1613,15 @@ Object.assign(App, {
     if (!this.state.project) { this.toast('Select a project first', 'err'); this.rootNav(this.openProjectPicker); return; }
     const layers = this.state.layers.filter((l) => l.projectId === this.state.project.id);
     if (layers.length === 0) { this.toast('Create a layer first', 'err'); this.rootNav(this.openLayers); return; }
-    if (existing) { const l = this.state.layers.find((x) => x.id === existing.layerId); this.state.draft = JSON.parse(JSON.stringify(existing)); this.state.draft._layer = l; this.openForm(); return; }
+    if (existing) {
+      const l = this.state.layers.find((x) => x.id === existing.layerId);
+      this.state.draft = JSON.parse(JSON.stringify(existing));
+      this.state.draft._layer = l;
+      this.state.draft._newMediaIds = [];
+      this.state.draft._removedMediaIds = [];
+      this.openForm();
+      return;
+    }
     // if a layer is active (from list), collect straight into it; else pick
     if (this.state.activeLayer && layers.some((l) => l.id === this.state.activeLayer.id)) { this.beginNewDraft(this.state.activeLayer); return; }
     const body = `<div class="muted" style="margin-bottom:12px">Which layer are you collecting into?</div>${layers.map((l) => `<div class="tpl" data-lc="${l.id}"><div class="ic">${this.symbSwatch(l)}</div><div class="tx"><div class="t">${esc(l.name)}</div><div class="d">${l.geomType} · ${l.fields.length} fields</div></div><div class="chev">${icon('chevron', 18)}</div></div>`).join('')}<button class="btn btn-ghost btn-block" id="newLyr" style="margin-top:6px">${icon('plus', 16)} New layer</button>`;
@@ -1449,16 +1631,17 @@ Object.assign(App, {
   },
 
   beginNewDraft(layer) {
-    this.state.draft = { id: null, layerId: layer.id, layerName: layer.name, geomType: layer.geomType, data: {}, media: [], geometry: null, location: null, surveyor: this.state.user.name, role: this.state.user.role, _layer: layer };
+    this.state.draft = { id: null, layerId: layer.id, layerName: layer.name, geomType: layer.geomType, data: {}, media: [], geometry: null, location: null, surveyor: this.state.user.name, role: this.state.user.role, _layer: layer, _newMediaIds: [], _removedMediaIds: [] };
     this.openForm();
   },
 
   openForm() {
     const d = this.state.draft, l = d._layer;
+    d.data = this.applyCaptureDefaults(d.data, l);
     if (l.template) this.seedTemplateDefaults(d, l);
     const missing = l.fields.filter((f) => f.required && !d.data[f.key] && this.fieldVisible(f, d.data));
     const geomBtns = l.geomType === 'point'
-      ? `<button class="btn btn-primary flex" id="gpsPoint">${icon('navigation', 16)} Use GPS</button><button class="btn btn-ghost flex" id="tapMap">${icon('mapPin', 16)} Tap map</button>`
+      ? `<button class="btn btn-primary flex" id="gpsPoint">${icon('navigation', 16)} Use GPS</button><button class="btn btn-ghost flex" id="tapMap">${icon('mapPin', 16)} Tap map</button>${!d.id ? `<button class="btn btn-ghost flex" id="rapidPoint">${icon('refresh', 16)} Rapid</button>` : ''}`
       : `<button class="btn btn-primary btn-block" id="drawMap">${icon('layers', 16)} Draw ${l.geomType} on map</button>`;
     const body = `
       <div class="card"><div class="card-lbl">Location · ${l.geomType}</div>
@@ -1563,6 +1746,7 @@ Object.assign(App, {
     };
     const gp = document.getElementById('gpsPoint'); if (gp) gp.onclick = () => this.captureGPS();
     const tm = document.getElementById('tapMap'); if (tm) tm.onclick = () => this.beginPlacePoint();
+    const rp = document.getElementById('rapidPoint'); if (rp) rp.onclick = () => this.openRapidCapture(l);
     const dm = document.getElementById('drawMap'); if (dm) dm.onclick = () => this.beginDraw(l.geomType);
     this.wireMedia();
     document.getElementById('fDraft').onclick = () => this.saveRecord('draft');
@@ -1769,27 +1953,29 @@ Object.assign(App, {
   snapCoordinate(latlng, excludeRecordId) {
     if (!this.state.snapping || !this.state.map || !this.state.project) return [latlng.lng, latlng.lat];
     const target = this.state.map.latLngToLayerPoint(latlng); let best = null;
-    const consider = (point, coordinate) => { const d = target.distanceTo(point); if (d <= 14 && (!best || d < best.distance)) best = { distance: d, coordinate }; };
+    const consider = (point, coordinate, type) => { const d = target.distanceTo(point); if (d <= (this.state.snapTolerance || 14) && (!best || d < best.distance)) best = { distance: d, coordinate, type }; };
     for (const r of this.state.records) {
       if (r.projectId !== this.state.project.id || r.id === excludeRecordId) continue;
       const layer = this.state.layers.find((l) => l.id === r.layerId); if (layer && layer.hidden) continue;
+      if (this.state.snapLayerIds && !this.state.snapLayerIds.includes(r.layerId)) continue;
       const g = Exporter.geometryOf(r); if (!g) continue;
       const coords = g.type === 'Point' ? [g.coordinates] : (g.type === 'Polygon' ? g.coordinates[0] : g.coordinates);
-      coords.forEach((c) => consider(this.state.map.latLngToLayerPoint([c[1], c[0]]), c.slice()));
-      for (let i = 0; i < coords.length - 1; i++) {
+      if (this.state.snapVertices) coords.forEach((c, i) => consider(this.state.map.latLngToLayerPoint([c[1], c[0]]), c.slice(), (i === 0 || i === coords.length - 1) ? 'endpoint' : 'vertex'));
+      if (this.state.snapEdges) for (let i = 0; i < coords.length - 1; i++) {
         const a = this.state.map.latLngToLayerPoint([coords[i][1], coords[i][0]]), b = this.state.map.latLngToLayerPoint([coords[i + 1][1], coords[i + 1][0]]);
         const vx = b.x - a.x, vy = b.y - a.y, len2 = vx * vx + vy * vy, t = len2 ? Math.max(0, Math.min(1, ((target.x - a.x) * vx + (target.y - a.y) * vy) / len2)) : 0;
         const p = L.point(a.x + t * vx, a.y + t * vy), ll = this.state.map.layerPointToLatLng(p);
         const z = coords[i].length > 2 && coords[i + 1].length > 2 ? coords[i][2] + t * (coords[i + 1][2] - coords[i][2]) : undefined;
-        consider(p, z == null ? [ll.lng, ll.lat] : [ll.lng, ll.lat, z]);
+        consider(p, z == null ? [ll.lng, ll.lat] : [ll.lng, ll.lat, z], 'edge');
       }
     }
-    if (best) { this.showSnapIndicator(best.coordinate); return best.coordinate; }
+    if (best) { this.showSnapIndicator(best.coordinate, best.type); return best.coordinate; }
     return [latlng.lng, latlng.lat];
   },
-  showSnapIndicator(coordinate) {
+  showSnapIndicator(coordinate, type) {
     if (this._snapIndicator) this.state.map.removeLayer(this._snapIndicator);
     this._snapIndicator = L.circleMarker([coordinate[1], coordinate[0]], { radius: 9, color: '#00FFFF', weight: 2, fillOpacity: 0, interactive: false }).addTo(this.state.map);
+    this._snapIndicator.bindTooltip(`Snap: ${type || 'target'}`, { permanent: true, direction: 'top', offset: [0, -10], className: 'snap-tooltip' }).openTooltip();
     clearTimeout(this._snapTimer); this._snapTimer = setTimeout(() => { if (this._snapIndicator) { this.state.map.removeLayer(this._snapIndicator); this._snapIndicator = null; } }, 650);
   },
 
@@ -1862,6 +2048,8 @@ Object.assign(App, {
         const id = uid('m');
         await Media.save(id, file); // File is a Blob
         d.media = d.media || [];
+        d._newMediaIds = d._newMediaIds || [];
+        d._newMediaIds.push(id);
         d.media.push({ id, type, kind: type, name: file.name, mime: file.type, size: file.size, lat, lng, capturedAt: nowISO() });
         this.openForm();
       });
@@ -1881,7 +2069,22 @@ Object.assign(App, {
     iP.onchange = (e) => { if (e.target.files.length) add(e.target.files, 'photo'); e.target.value = ''; };
     iV.onchange = (e) => { if (e.target.files.length) add(e.target.files, 'video'); e.target.value = ''; };
     iF.onchange = (e) => { if (e.target.files.length) add(e.target.files, 'file'); e.target.value = ''; };
-    document.querySelectorAll('[data-rm]').forEach((el) => el.onclick = (ev) => { ev.stopPropagation(); const removed = d.media.splice(parseInt(el.dataset.rm), 1)[0]; if (removed && !removed.dataUrl) Media.remove(removed.id); this.openForm(); });
+    document.querySelectorAll('[data-rm]').forEach((el) => el.onclick = async (ev) => {
+      ev.stopPropagation();
+      const removed = d.media.splice(parseInt(el.dataset.rm), 1)[0];
+      if (removed && !removed.dataUrl) {
+        d._newMediaIds = d._newMediaIds || [];
+        d._removedMediaIds = d._removedMediaIds || [];
+        const newIndex = d._newMediaIds.indexOf(removed.id);
+        if (newIndex >= 0) {
+          d._newMediaIds.splice(newIndex, 1);
+          await Media.remove(removed.id);
+        } else if (!d._removedMediaIds.includes(removed.id)) {
+          d._removedMediaIds.push(removed.id);
+        }
+      }
+      this.openForm();
+    });
   },
 
   /* ---------- In-app camera: live preview, tap-to-capture, saved as Blob ---------- */
@@ -2077,6 +2280,8 @@ Object.assign(App, {
     const id = uid('m');
     const ext = type === 'video' ? (blob.type.includes('mp4') ? 'mp4' : 'webm') : 'jpg';
     await Media.save(id, blob);
+    d._newMediaIds = d._newMediaIds || [];
+    d._newMediaIds.push(id);
     d.media.push({ id, type, kind: type, name: `${type}_${Date.now()}.${ext}`, mime: blob.type, size: blob.size, lat: loc ? loc.lat : null, lng: loc ? loc.lng : null, capturedAt: nowISO() });
     this.toast(type === 'photo' ? 'Photo saved to record' : 'Video saved to record', 'ok');
   },
@@ -2098,12 +2303,16 @@ Object.assign(App, {
   async saveRecord(status) {
     const d = this.state.draft, l = d._layer;
     if (status === 'completed' && !d.geometry) { this.toast(`Geometry is required — capture the ${l.geomType} on the map`, 'err'); return; }
+    if (d.geometry && !this.requireValidGeometry(d.geometry)) return;
     if (l.template) this.applyTemplateAutofill(d, l);
     // carry Z into point geometry coordinates for true 3D output
     if (d.geometry && d.geometry.type === 'Point' && d.location && d.location.z != null) d.geometry.coordinates[2] = d.location.z;
     const rec = { id: d.id || uid('rec'), projectId: this.state.project.id, layerId: l.id, layerName: l.name, geomType: l.geomType, data: d.data, geometry: d.geometry, location: d.location, media: (d.media || []), surveyor: d.surveyor, role: d.role, status, createdAt: d.createdAt || nowISO(), updatedAt: nowISO() };
     this.captureSessionUndo();
     await DB.put('records', rec);
+    // Existing attachments are deleted only after the edited record commits.
+    // This keeps Cancel/Discard non-destructive.
+    for (const id of (d._removedMediaIds || [])) this.queueMediaDelete(id);
     const i = this.state.records.findIndex((r) => r.id === rec.id);
     if (i >= 0) this.state.records[i] = rec; else this.state.records.unshift(rec);
     this.state.draft = null;
@@ -2119,12 +2328,199 @@ Object.assign(App, {
   async backfillZ(rec) {
     try { const { z } = await Geo.elevation(rec.location.lat, rec.location.lng); if (z != null) { rec.location.z = Math.round(z * 100) / 100; if (rec.geometry && rec.geometry.type === 'Point') rec.geometry.coordinates[2] = rec.location.z; await DB.put('records', rec); } } catch {}
   },
+
+  openRapidCapture(layer) {
+    if (!layer || layer.geomType !== 'point') { this.toast('Rapid capture is available for point layers', 'err'); return; }
+    this.state.draft = null;
+    const continuing = !!(this._rapidLayer && this._rapidLayer.id === layer.id);
+    this._rapidLayer = layer;
+    if (!continuing) { this._rapidCount = 0; this._rapidLastFix = null; this._rapidActive = false; }
+    this._rapidDistance = this._rapidDistance || 5;
+    this._rapidActive = !!this._rapidActive;
+    if (!this._watchStarted) this.startWatch();
+    const required = (layer.fields || []).filter((f) => f.required).length;
+    const body = `<div class="card"><div class="card-lbl">${esc(layer.name)} · Rapid point capture</div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px">
+          <div><div class="muted">Captured this session</div><div style="font-size:25px;font-weight:800">${this._rapidCount}</div></div>
+          <div><div class="muted">Required attributes</div><div style="font-size:25px;font-weight:800">${required}</div></div>
+        </div>
+      </div>
+      <div class="note">Each point is stored immediately with its ID, coordinates, GPS accuracy, timestamps, surveyor, layer defaults and template autofill. Missing required attributes are marked <b>Needs attributes</b> for completion later.</div>
+      <button class="btn btn-primary btn-block btn-lg" id="rapidNow">${icon('mapPin', 17)} Capture current GPS position</button>
+      <div class="card" style="margin-top:12px"><div class="card-lbl">Automatic distance capture</div>
+        <div class="field"><label class="lbl">Capture every</label><select class="sel" id="rapidDistance">${[1,2,5,10,20,50].map((n) => `<option value="${n}" ${n === this._rapidDistance ? 'selected' : ''}>${n} metres</option>`).join('')}</select></div>
+        <button class="btn ${this._rapidActive ? 'btn-danger' : 'btn-ghost'} btn-block" id="rapidAuto">${this._rapidActive ? icon('pause', 16) + ' Stop automatic capture' : icon('play', 16) + ' Start automatic capture'}</button>
+      </div>
+      <div id="rapidFix" class="muted" style="margin-top:10px">${this.state.lastFix ? `Current fix ±${Math.round(this.state.lastFix.accuracy || 0)} m` : 'Waiting for GPS fix…'}</div>`;
+    this.openSheet('Rapid capture', body, `<button class="btn btn-ghost btn-block" id="rapidDone">${icon('check', 16)} Finish and review records</button>`);
+    document.getElementById('rapidNow').onclick = () => this.captureRapidFix(this.state.lastFix, false);
+    document.getElementById('rapidDistance').onchange = (e) => { this._rapidDistance = +e.target.value || 5; };
+    document.getElementById('rapidAuto').onclick = () => {
+      this._rapidDistance = +document.getElementById('rapidDistance').value || 5;
+      this._rapidActive = !this._rapidActive;
+      this._rapidLastFix = null;
+      this.openRapidCapture(layer);
+      this.toast(this._rapidActive ? `Automatic capture started · every ${this._rapidDistance} m` : 'Automatic capture stopped', 'ok');
+    };
+    document.getElementById('rapidDone').onclick = () => {
+      this._rapidActive = false; this._rapidLayer = null; this._rapidLastFix = null;
+      this.state.activeLayer = layer; this._filter = 'all'; this.rootNav(this.openRecords);
+    };
+  },
+
+  async captureRapidFix(fix, automatic) {
+    if (!this._rapidLayer || this._rapidBusy) return;
+    if (!fix || !isFinite(fix.lat) || !isFinite(fix.lng) || !fix.ts || Date.now() - fix.ts > 20000) {
+      if (!automatic) this.toast('Wait for a fresh GPS fix', 'err');
+      return;
+    }
+    const limit = Number(this.state.project && this.state.project.captureAccuracyLimit) || 15;
+    if (fix.accuracy != null && fix.accuracy > limit) {
+      if (!automatic) this.toast(`GPS accuracy ±${Math.round(fix.accuracy)} m is worse than the ${limit} m limit`, 'err');
+      return;
+    }
+    this._rapidBusy = true;
+    try {
+      const layer = this._rapidLayer;
+      const location = { lat: fix.lat, lng: fix.lng, z: fix.z != null ? Math.round(fix.z * 100) / 100 : null, accuracy: fix.accuracy, capturedAt: nowISO(), source: this._gnssActive ? 'external_gnss' : 'device_gps' };
+      const data = this.applyCaptureDefaults({}, layer);
+      const d = { data, location, media: [], _layer: layer, surveyor: this.state.user.name, role: this.state.user.role };
+      if (layer.template) { this.seedTemplateDefaults(d, layer); this.applyTemplateAutofill(d, layer); }
+      const coords = location.z == null ? [fix.lng, fix.lat] : [fix.lng, fix.lat, location.z];
+      const rec = { id: uid('rec'), projectId: this.state.project.id, layerId: layer.id, layerName: layer.name, geomType: 'point', data: d.data,
+        geometry: { type: 'Point', coordinates: coords }, location, media: [], surveyor: this.state.user.name, role: this.state.user.role,
+        status: this.captureStatus(d.data, layer), createdAt: nowISO(), updatedAt: nowISO() };
+      await DB.put('records', rec);
+      this.state.records.unshift(rec); this._rapidCount = (this._rapidCount || 0) + 1; this._rapidLastFix = { ...fix };
+      this.renderAllLayers(); this.refreshBarSub();
+      if (location.z == null && navigator.onLine) this.backfillZ(rec);
+      if (navigator.vibrate) navigator.vibrate(40);
+      if (!automatic) this.toast(`Point ${this._rapidCount} captured · ${rec.status === 'needs_attributes' ? 'needs attributes' : 'complete'}`, 'ok');
+      if (document.getElementById('rapidNow')) this.openRapidCapture(layer);
+    } catch (e) { this.toast('Rapid capture failed: ' + e.message, 'err'); }
+    finally { this._rapidBusy = false; }
+  },
+
+  rapidOnFix(fix) {
+    if (!this._rapidActive || !this._rapidLayer || this._rapidBusy) return;
+    if (this._rapidLastFix && this.routeDistance(this._rapidLastFix, fix) < this._rapidDistance) return;
+    this.captureRapidFix(fix, true);
+  },
 });
 
 /* ============================================================
    Part 6 — Menu, Export, Import (load existing), boot
    ============================================================ */
 Object.assign(App, {
+  async openOfflineReadiness() {
+    this.openSheet('Offline readiness', '<div class="note">Checking application files, storage and offline capabilities…</div>');
+    const required = [
+      './index.html', './css/app.css?v=22', './js/icons.js?v=22', './js/db.js?v=22',
+      './js/geo.js?v=22', './js/export.js?v=22', './js/app.js?v=22',
+    ];
+    let cached = 0;
+    if ('caches' in window) {
+      for (const url of required) if (await caches.match(url)) cached++;
+    }
+    let estimate = {}, persisted = false;
+    if (navigator.storage && navigator.storage.estimate) estimate = await navigator.storage.estimate();
+    if (navigator.storage && navigator.storage.persisted) persisted = await navigator.storage.persisted();
+    const mb = (n) => n == null ? '—' : `${(n / 1048576).toFixed(1)} MB`;
+    const checks = [
+      ['Service worker', !!(navigator.serviceWorker && navigator.serviceWorker.controller), 'Reload once if activation is pending'],
+      ['Application shell', cached === required.length, `${cached}/${required.length} mandatory files cached`],
+      ['Map engine', typeof L !== 'undefined', 'Leaflet must load successfully once'],
+      ['Projection engine', typeof proj4 !== 'undefined', 'Required for project CRS output'],
+      ['Package engine', typeof JSZip !== 'undefined', 'Required for complete backups and ZIP exports'],
+      ['Persistent storage', persisted, persisted ? 'Browser has granted protection' : 'Request protection below'],
+      ['Network state', navigator.onLine, navigator.onLine ? 'Online-dependent services available' : 'Currently offline'],
+    ];
+    const rows = checks.map(([name, ok, detail]) => `<div class="tpl" style="cursor:default"><div class="ic" style="color:${ok ? 'var(--green)' : 'var(--orange)'}">${icon(ok ? 'checkCircle' : 'alert', 20)}</div><div class="tx"><div class="t">${esc(name)}</div><div class="d">${esc(detail)}</div></div></div>`).join('');
+    const body = `${rows}
+      <div class="card" style="margin-top:12px"><div class="card-lbl">Device storage</div>
+        <div class="attr-mini"><span>Used by browser storage</span><b>${mb(estimate.usage)}</b></div>
+        <div class="attr-mini"><span>Estimated quota</span><b>${mb(estimate.quota)}</b></div>
+      </div>
+      <div class="note">Basemaps are available offline only for areas and zoom levels already cached on this device. Verify the survey area in airplane mode before deployment.</div>`;
+    this.openSheet('Offline readiness', body, persisted ? '' : `<button class="btn btn-primary btn-block" id="requestPersist">${icon('save', 16)} Protect offline storage</button>`);
+    const b = document.getElementById('requestPersist');
+    if (b) b.onclick = async () => {
+      const granted = !!(navigator.storage && navigator.storage.persist && await navigator.storage.persist());
+      this.toast(granted ? 'Persistent storage granted' : 'Browser did not grant persistent storage', granted ? 'ok' : 'err');
+      this.openOfflineReadiness();
+    };
+  },
+
+  async buildCompleteBackup() {
+    if (typeof JSZip === 'undefined') throw new Error('ZIP engine is unavailable');
+    const zip = new JSZip();
+    const snapshot = {
+      format: 'easycapture-complete-backup',
+      version: 1,
+      createdAt: nowISO(),
+      user: await DB.all('user'),
+      projects: await DB.all('projects'),
+      layers: await DB.all('layers'),
+      records: await DB.all('records'),
+      settings: await DB.all('settings'),
+      media: [],
+    };
+    for (const row of await DB.all('media')) {
+      const path = `media/${encodeURIComponent(row.id)}`;
+      if (row.blob) zip.file(path, row.blob);
+      snapshot.media.push({ id: row.id, savedAt: row.savedAt || null, path: row.blob ? path : null, type: row.blob && row.blob.type || '' });
+    }
+    zip.file('backup.json', JSON.stringify(snapshot, null, 2));
+    return zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+  },
+
+  async restoreCompleteBackup(file) {
+    if (typeof JSZip === 'undefined') throw new Error('ZIP engine is unavailable');
+    const zip = await JSZip.loadAsync(await file.arrayBuffer());
+    const entry = zip.file('backup.json');
+    if (!entry) throw new Error('backup.json is missing');
+    const snapshot = JSON.parse(await entry.async('string'));
+    if (snapshot.format !== 'easycapture-complete-backup' || !Array.isArray(snapshot.projects) || !Array.isArray(snapshot.records)) throw new Error('not an EasyCapture complete backup');
+    const media = [];
+    for (const meta of (snapshot.media || [])) {
+      let blob = null;
+      if (meta.path) {
+        const mediaEntry = zip.file(meta.path);
+        if (!mediaEntry) throw new Error(`missing attachment ${meta.id}`);
+        blob = await mediaEntry.async('blob');
+        if (meta.type && blob.type !== meta.type) blob = new Blob([blob], { type: meta.type });
+      }
+      media.push({ id: meta.id, blob, savedAt: meta.savedAt || nowISO() });
+    }
+    await DB.replaceAll({ user: snapshot.user || [], projects: snapshot.projects, layers: snapshot.layers || [], records: snapshot.records, settings: snapshot.settings || [], media });
+  },
+
+  openBackupRestore() {
+    const body = `<div class="note">A complete backup includes all profiles, projects, layers, records, routes, settings, photos, videos and files stored by EasyCapture.</div>
+      <button class="btn btn-primary btn-block btn-lg" id="backupNow">${icon('download', 17)} Download complete backup</button>
+      <input type="file" id="restoreFile" accept=".zip,application/zip" hidden />
+      <button class="btn btn-ghost btn-block" id="restoreNow" style="margin-top:10px">${icon('upload', 17)} Restore complete backup</button>
+      <div id="backupStatus" class="muted" style="margin-top:10px"></div>`;
+    this.openSheet('Backup & restore', body);
+    document.getElementById('backupNow').onclick = async () => {
+      const status = document.getElementById('backupStatus'); status.textContent = 'Building protected backup…';
+      try {
+        const blob = await this.buildCompleteBackup();
+        downloadBlob(`EasyCapture_Complete_Backup_${new Date().toISOString().slice(0, 10)}.zip`, blob, 'application/zip');
+        status.textContent = ''; this.toast('Complete backup downloaded', 'ok');
+      } catch (e) { status.textContent = ''; this.toast('Backup failed: ' + e.message, 'err'); }
+    };
+    const input = document.getElementById('restoreFile');
+    document.getElementById('restoreNow').onclick = () => input.click();
+    input.onchange = async (e) => {
+      const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+      if (!confirm('Restore this backup and replace ALL data currently stored on this device? Create a current backup first.')) return;
+      const status = document.getElementById('backupStatus'); status.textContent = 'Validating and restoring backup…';
+      try { await this.restoreCompleteBackup(f); this.toast('Backup restored — reloading', 'ok'); setTimeout(() => location.reload(), 700); }
+      catch (err) { status.textContent = ''; this.toast('Restore failed: ' + err.message, 'err'); }
+    };
+  },
+
   openRouteSummary() {
     if (!this.state.project) { this.toast('Select a project first', 'err'); return; }
     const st = this.routeStats(), paused = !!this.state.route.paused;
@@ -2157,6 +2553,8 @@ Object.assign(App, {
       <div class="tpl" id="mExport"><div class="ic">${icon('download', 21)}</div><div class="tx"><div class="t">Export & share</div><div class="d">GeoJSON, KML, Shapefile, CSV, ZIP</div></div><div class="chev">${icon('chevron', 18)}</div></div>
       <div class="tpl" id="mRoute"><div class="ic">${icon('navigation', 21)}</div><div class="tx"><div class="t">Default Field Route</div><div class="d">${this.routeDistanceText(this.routeStats().distanceM)} · ${this.routeStats().pointCount} saved GPS points${this.state.route.paused ? ' · paused' : ''}</div></div><div class="chev">${icon('chevron', 18)}</div></div>
       <div class="tpl" id="mGnss"><div class="ic">${icon('target', 21)}</div><div class="tx"><div class="t">External GNSS receiver</div><div class="d">${this._gnssActive ? 'Connected · ' + this.gnssFixLabel() : 'Pair an RTK receiver for cm accuracy'}</div></div><div class="chev">${icon('chevron', 18)}</div></div>
+      <div class="tpl" id="mOffline"><div class="ic">${icon('checkCircle', 21)}</div><div class="tx"><div class="t">Offline readiness</div><div class="d">Verify cache, libraries and protected storage</div></div><div class="chev">${icon('chevron', 18)}</div></div>
+      <div class="tpl" id="mBackup"><div class="ic">${icon('package', 21)}</div><div class="tx"><div class="t">Backup & restore</div><div class="d">Complete device backup including attachments</div></div><div class="chev">${icon('chevron', 18)}</div></div>
       ${this.state.project ? `<div class="card" style="margin-top:6px"><div class="card-lbl">${icon('globe', 12, 'display:inline;vertical-align:-2px')} Project coordinate system</div><div style="font-family:var(--mono);font-size:12.5px">${esc(this.state.project.crsName)} · ${esc(this.state.project.crsCode)}</div></div>` : ''}
       <button class="btn btn-danger btn-block" id="mWipe">${icon('trash', 16)} Erase all local data</button>
       <div class="muted" style="text-align:center;margin-top:14px">EasyCapture · offline-first field GIS</div>`;
@@ -2168,6 +2566,8 @@ Object.assign(App, {
     document.getElementById('mImport').onclick = () => this.navTo(this.openImport);
     document.getElementById('mExport').onclick = () => this.navTo(this.openExport);
     document.getElementById('mRoute').onclick = () => this.navTo(this.openRouteSummary);
+    document.getElementById('mOffline').onclick = () => this.navTo(this.openOfflineReadiness);
+    document.getElementById('mBackup').onclick = () => this.navTo(this.openBackupRestore);
     document.getElementById('mWipe').onclick = async () => {
       if (!confirm('Erase ALL data on this device (projects, layers, records, media, profile)? This cannot be undone.')) return;
       await DB.clear('projects'); await DB.clear('layers'); await DB.clear('records'); await DB.clear('media'); await DB.clear('settings'); await DB.clear('user');
@@ -2641,7 +3041,8 @@ Object.assign(App, {
           const fields = [...fieldKeys].filter((k) => k !== '__source_layer').slice(0, 30).map((k) => {
             const sample = list.find((f) => f.properties && f.properties[k] != null);
             const v = sample ? sample.properties[k] : '';
-            return { id: uid('f'), label: k, key: k.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''), type: (typeof v === 'number') ? 'number' : 'text', required: false };
+            const inferred = typeof v === 'number' ? (Number.isInteger(v) ? 'integer' : 'number') : typeof v === 'boolean' ? 'bool' : 'text';
+            return { id: uid('f'), label: k, key: k.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''), type: inferred, required: false };
           });
           // only suffix when this one source really contains more than one geometry type
           const suffix = kindsInSource > 1 ? '_' + typeMap[gtype].toUpperCase() : '';
@@ -2653,7 +3054,15 @@ Object.assign(App, {
       for (const f of list) {
         const props = f.properties || {};
         const data = {};
-        layer.fields.forEach((fl) => { const hit = Object.keys(props).find((k) => k.toLowerCase() === fl.key || k === fl.label); if (hit != null && props[hit] != null) data[fl.key] = String(props[hit]); });
+        layer.fields.forEach((fl) => {
+          const hit = Object.keys(props).find((k) => k.toLowerCase() === fl.key || k === fl.label);
+          if (hit == null || props[hit] == null) return;
+          const raw = props[hit];
+          if (fl.type === 'integer') data[fl.key] = Number.isFinite(+raw) ? Math.trunc(+raw) : null;
+          else if (fl.type === 'number') data[fl.key] = Number.isFinite(+raw) ? +raw : null;
+          else if (fl.type === 'bool') data[fl.key] = typeof raw === 'boolean' ? (raw ? 'Yes' : 'No') : String(raw);
+          else data[fl.key] = String(raw);
+        });
         const g = f.geometry;
         const c0 = g.type === 'Point' ? g.coordinates : (g.type === 'LineString' ? g.coordinates[0] : g.coordinates[0][0]);
         const z = (g.type === 'Point' && g.coordinates.length > 2) ? g.coordinates[2] : (props.Z_Elevation != null ? +props.Z_Elevation : null);
@@ -2747,6 +3156,17 @@ Object.assign(App, {
       ...this.streamAttrs(),
     };
   },
+  applyCaptureDefaults(data, layer) {
+    const out = { ...(data || {}) };
+    for (const f of ((layer && layer.fields) || [])) {
+      if ((out[f.key] == null || out[f.key] === '') && f.default != null) out[f.key] = f.default;
+    }
+    return out;
+  },
+  captureStatus(data, layer) {
+    const missing = ((layer && layer.fields) || []).some((f) => f.required && (data[f.key] == null || data[f.key] === ''));
+    return missing ? 'needs_attributes' : 'completed';
+  },
 
   /* ---------- lifecycle ---------- */
   async startStreaming() {
@@ -2785,7 +3205,7 @@ Object.assign(App, {
   async streamPointFix(fix, cfg) {
     const tol = Math.max(0.5, Number(cfg.tolerance) || 1);
     if (this._streamLastPt && this.routeDistance(this._streamLastPt, fix) < tol) return;
-    const data = this.streamAutoFields(fix);
+    const data = this.applyCaptureDefaults(this.streamAutoFields(fix), this._streamLayer);
     this._streamLastPt = { lat: fix.lat, lng: fix.lng };
     const coords = fix.z != null ? [fix.lng, fix.lat, Math.round(fix.z * 100) / 100] : [fix.lng, fix.lat];
     const rec = {
@@ -2793,7 +3213,7 @@ Object.assign(App, {
       geomType: 'point', data,
       geometry: { type: 'Point', coordinates: coords },
       location: { lat: fix.lat, lng: fix.lng, z: fix.z != null ? Math.round(fix.z * 100) / 100 : null, accuracy: fix.accuracy != null ? Math.round(fix.accuracy * 100) / 100 : null, capturedAt: nowISO() },
-      media: [], surveyor: this.state.user.name, role: this.state.user.role, status: 'completed', createdAt: nowISO(), updatedAt: nowISO(),
+      media: [], surveyor: this.state.user.name, role: this.state.user.role, status: this.captureStatus(data, this._streamLayer), createdAt: nowISO(), updatedAt: nowISO(),
     };
     await DB.put('records', rec);
     this.state.records.unshift(rec);
@@ -2836,7 +3256,7 @@ Object.assign(App, {
     const geometry = type === 'Polygon' ? { type: 'Polygon', coordinates: [verts.map(toC)] } : { type: 'LineString', coordinates: verts.map(toC) };
     const now = new Date(), pad = (n) => String(n).padStart(2, '0');
     const startD = new Date(this._streamStartISO);
-    const data = {
+    const data = this.applyCaptureDefaults({
       FEATURECLASS: (this.state.project.streamCfg || {}).featureClass || 'Streaming_Capture',
       ...this.streamAttrs(),
       START_DATE: `${startD.getFullYear()}-${pad(startD.getMonth() + 1)}-${pad(startD.getDate())}`,
@@ -2845,13 +3265,13 @@ Object.assign(App, {
       END_TIME: `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`,
       VERTEX_CNT: verts.length,
       LENGTH_M: Math.round(this._streamPathLen * 100) / 100,
-    };
+    }, this._streamLayer);
     const first = verts[0];
     const rec = {
       id: uid('rec'), projectId: this.state.project.id, layerId: this._streamLayer.id, layerName: this._streamLayer.name,
       geomType: type === 'Polygon' ? 'polygon' : 'line', data, geometry,
       location: { lat: first.lat, lng: first.lng, z: first.z, accuracy: null, capturedAt: this._streamStartISO },
-      media: [], surveyor: this.state.user.name, role: this.state.user.role, status: 'completed', createdAt: nowISO(), updatedAt: nowISO(),
+      media: [], surveyor: this.state.user.name, role: this.state.user.role, status: this.captureStatus(data, this._streamLayer), createdAt: nowISO(), updatedAt: nowISO(),
     };
     await DB.put('records', rec);
     this.state.records.unshift(rec);
@@ -3129,6 +3549,29 @@ Object.assign(App, {
     const am = this.state.project && this.state.project.autoMap;
     return !!(am && am[f.key.toUpperCase()] && am[f.key.toUpperCase()] !== 'none');
   },
+  validateTemplatePack(pack) {
+    if (!pack || !Array.isArray(pack.layers) || !pack.layers.length) throw new Error('template contains no feature classes');
+    const layerNames = new Set();
+    for (const layer of pack.layers) {
+      if (!layer || typeof layer.name !== 'string' || !layer.name.trim()) throw new Error('template contains an unnamed feature class');
+      const layerKey = layer.name.trim().toLowerCase();
+      if (layerNames.has(layerKey)) throw new Error(`duplicate feature class: ${layer.name}`);
+      layerNames.add(layerKey);
+      if (!['point', 'line', 'polygon'].includes(layer.geomType)) throw new Error(`unsupported geometry type in ${layer.name}`);
+      if (!Array.isArray(layer.fields)) throw new Error(`fields are missing from ${layer.name}`);
+      const fieldNames = new Set();
+      for (const field of layer.fields) {
+        if (!field || typeof field.name !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(field.name)) throw new Error(`unsafe or invalid field name in ${layer.name}`);
+        const key = field.name.toUpperCase();
+        if (fieldNames.has(key)) throw new Error(`duplicate field ${field.name} in ${layer.name}`);
+        fieldNames.add(key);
+      }
+    }
+    for (const [name, domain] of Object.entries(pack.domains || {})) {
+      if (!name || !domain || !Array.isArray(domain.values)) throw new Error('template contains an invalid domain');
+    }
+    return true;
+  },
 
   /* ---------- import flow ---------- */
   openTemplateImport() {
@@ -3149,6 +3592,7 @@ Object.assign(App, {
         const pack = JSON.parse(await f.text());
         const supportedTemplateFormats = ['easycapture-template-pack', 'smart-maidani-template-pack'];
         if (!supportedTemplateFormats.includes(pack.format) || !Array.isArray(pack.layers)) throw new Error('not an EasyCapture Template Pack');
+        this.validateTemplatePack(pack);
         this.templateActivationSheet(pack);
       } catch (err) { status.textContent = ''; this.toast('Template import failed: ' + (err.message || 'unreadable file'), 'err'); }
     };

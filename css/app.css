@@ -426,6 +426,8 @@ svg { display: block; }
    EasyCapture additions — welcome, layers, symbology, import
    ============================================================ */
 .brand-logo-lg { display: flex; justify-content: center; margin-bottom: 14px; }
+.brand-logo-lg .easycapture-logo-img { border-radius: 18px; box-shadow: 0 8px 22px rgba(15, 31, 48, 0.18); }
+.mark .easycapture-logo-img { display: block; border-radius: 7px; }
 .welcome-title { font-size: 26px; font-weight: 750; letter-spacing: -0.5px; color: var(--ink); }
 .welcome-sub { font-size: 13.5px; color: var(--grey-500); line-height: 1.55; margin: 8px auto 18px; max-width: 300px; }
 
